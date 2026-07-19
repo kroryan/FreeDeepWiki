@@ -2039,22 +2039,28 @@ IMPORTANT:
   const [isModelSelectionModalOpen, setIsModelSelectionModalOpen] = useState(false);
 
   return (
-    <div className="h-screen paper-texture p-4 md:p-8 flex flex-col">
+    <div className="wiki-root">
       <style>{wikiStyles}</style>
 
-      <header className="max-w-[95%] xl:max-w-[1800px] mx-auto mb-8 h-fit w-full">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <Link href="/" className="text-[var(--accent-primary)] hover:text-[var(--highlight)] flex items-center gap-1.5 transition-colors border-b border-[var(--border-color)] hover:border-[var(--accent-primary)] pb-0.5">
-              <FaHome /> {messages.repoPage?.home || 'Home'}
-            </Link>
-          </div>
+      <header className="wiki-header">
+        <div className="flex items-center gap-3">
+          <Link href="/" className="text-[var(--accent-primary)] hover:text-[var(--highlight)] flex items-center gap-1.5 transition-colors font-mono text-sm">
+            <FaHome /> {messages.repoPage?.home || 'Home'}
+          </Link>
+          {effectiveRepoInfo.owner && (
+            <span className="text-[var(--muted)] font-mono text-xs opacity-60">
+              / {effectiveRepoInfo.owner}/{effectiveRepoInfo.repo}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <ThemeToggle />
         </div>
       </header>
 
-      <main className="flex-1 max-w-[95%] xl:max-w-[1800px] mx-auto overflow-y-auto w-full">
+      <main className="wiki-body">
         {isLoading ? (
-          <div className="flex flex-col items-center justify-center p-8 bg-[var(--card-bg)] rounded-lg shadow-custom card-japanese">
+          <div className="flex flex-col items-center justify-center w-full h-full wiki-content">
             <div className="relative mb-6">
               <div className="absolute -inset-4 bg-[var(--accent-primary)]/10 rounded-full blur-md animate-pulse"></div>
               <div className="relative flex items-center justify-center">
@@ -2116,7 +2122,8 @@ IMPORTANT:
             )}
           </div>
         ) : error ? (
-          <div className="bg-[var(--highlight)]/5 border border-[var(--highlight)]/30 rounded-lg p-5 mb-4 shadow-sm">
+          <div className="flex flex-col items-center justify-center w-full h-full wiki-content">
+            <div className="max-w-lg w-full bg-[var(--highlight)]/5 border border-[var(--highlight)]/30 p-5 shadow-sm">
             <div className="flex items-center text-[var(--highlight)] mb-3">
               <FaExclamationTriangle className="mr-2" />
               <span className="font-bold font-serif">{messages.repoPage?.errorTitle || messages.common?.error || 'Error'}</span>
@@ -2143,10 +2150,11 @@ IMPORTANT:
               </Link>
             </div>
           </div>
+          </div>
         ) : wikiStructure ? (
-          <div className="h-full overflow-y-auto flex flex-col lg:flex-row gap-4 w-full overflow-hidden bg-[var(--card-bg)] rounded-lg shadow-custom card-japanese">
+          <React.Fragment>
             {/* Wiki Navigation */}
-            <div className="h-full w-full lg:w-[280px] xl:w-[320px] flex-shrink-0 bg-[var(--background)]/50 rounded-lg rounded-r-none p-5 border-b lg:border-b-0 lg:border-r border-[var(--border-color)] overflow-y-auto">
+            <div className="wiki-sidebar">
               <h3 className="text-lg font-bold text-[var(--foreground)] mb-3 font-serif">{wikiStructure.title}</h3>
               <p className="text-[var(--muted)] text-sm mb-5 leading-relaxed">{wikiStructure.description}</p>
 
@@ -2246,7 +2254,7 @@ IMPORTANT:
             </div>
 
             {/* Wiki Content */}
-            <div id="wiki-content" className="w-full flex-grow p-6 lg:p-8 overflow-y-auto">
+            <div id="wiki-content" className="wiki-content">
               {currentPageId && generatedPages[currentPageId] ? (
                 <div className="w-full">
                   <h3 className="text-xl font-bold text-[var(--foreground)] mb-4 break-words font-serif">
@@ -2295,18 +2303,9 @@ IMPORTANT:
                 </div>
               )}
             </div>
-          </div>
+          </React.Fragment>
         ) : null}
       </main>
-
-      <footer className="max-w-[95%] xl:max-w-[1800px] mx-auto mt-8 flex flex-col gap-4 w-full">
-        <div className="flex justify-between items-center gap-4 text-center text-[var(--muted)] text-sm h-fit w-full bg-[var(--card-bg)] rounded-lg p-3 shadow-sm border border-[var(--border-color)]">
-          <p className="flex-1 font-serif">
-            {messages.footer?.copyright || 'FreeDeepWiki - Generate Wiki from GitHub/Gitlab/Bitbucket repositories'}
-          </p>
-          <ThemeToggle />
-        </div>
-      </footer>
 
       {/* Floating Chat Button */}
       {!isLoading && wikiStructure && (
