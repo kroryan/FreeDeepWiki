@@ -1,0 +1,32 @@
+# Local, Ollama-first overrides. Keep this file separate from the upstream
+# docker-compose.yml so upstream updates can be merged without conflicts.
+services:
+  deepwiki:
+    image: deepwiki-open:ollama
+    env_file: !reset []
+    environment:
+      PORT: "${PORT:-8001}"
+      SERVER_BASE_URL: "http://localhost:${PORT:-8001}"
+      OLLAMA_HOST: "${OLLAMA_CONTAINER_ENDPOINT:-http://host.docker.internal:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-gpt-oss:120b-cloud}"
+      OLLAMA_EMBED_MODEL: "${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+      DEEPWIKI_EMBEDDER_TYPE: ollama
+      DEEPWIKI_CONFIG_DIR: /app/.deepwiki/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./.deepwiki:/app/.deepwiki
+      - ./scripts/deepwiki_config.py:/opt/deepwiki_config.py:ro
+    command:
+      - /bin/bash
+      - -c
+      - |
+        python /opt/deepwiki_config.py \
+          --source /app/api/config \
+          --output /app/.deepwiki/config \
+          --model "$${OLLAMA_MODEL}" \
+          --embed-model "$${OLLAMA_EMBED_MODEL}"
+        printf 'DEEPWIKI_OLLAMA_MODE=1\n' > /app/.env
+        exec /app/start.sh
+    # `docker compose up` starts it explicitly; it will not start at boot.
+    restart: "no"

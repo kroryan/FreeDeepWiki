@@ -67,3 +67,7 @@ next-env.d.ts
 
 # ignore adding self-signed certs
 certs/
+
+# Local DeepWiki/Ollama runtime state
+/.deepwiki/
+/deepwiki.env

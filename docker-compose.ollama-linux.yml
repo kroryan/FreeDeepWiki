@@ -1,0 +1,7 @@
+# Linux-native networking: Ollama commonly listens only on 127.0.0.1, so the
+# container shares the host network. Docker Desktop and WSL use bridge mode
+# from docker-compose.ollama.yml instead.
+services:
+  deepwiki:
+    network_mode: host
+    ports: !reset []
