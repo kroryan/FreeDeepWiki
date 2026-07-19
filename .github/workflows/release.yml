@@ -137,7 +137,7 @@ jobs:
           chmod +x appimagetool-x86_64.AppImage
           
           export APPIMAGE_EXTRACT_AND_RUN=1
-          ./appimagetool-x86_64.AppImage AppDir FreeDeepWiki-x86_64.AppImage
+          ./appimagetool-x86_64.AppImage --no-appstream AppDir FreeDeepWiki-x86_64.AppImage
 
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v4
