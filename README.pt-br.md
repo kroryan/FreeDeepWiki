@@ -1,8 +1,8 @@
-# DeepWiki-Open
+# FreeDeepWiki
 
-![DeepWiki Banner](screenshots/Deepwiki.png)
+![FreeDeepWiki Banner](screenshots/Freedeepwiki.png)
 
-**DeepWiki** é minha própria tentativa de implementação do DeepWiki, que cria automaticamente wikis bonitas e interativas para qualquer repositório GitHub, GitLab ou BitBucket! Basta inserir o nome de um repositório, e o DeepWiki irá:
+**FreeDeepWiki** é minha própria tentativa de implementação do FreeDeepWiki, que cria automaticamente wikis bonitas e interativas para qualquer repositório GitHub, GitLab ou BitBucket! Basta inserir o nome de um repositório, e o FreeDeepWiki irá:
 
 1. Analisar a estrutura do código
 2. Gerar documentação abrangente
@@ -33,8 +33,8 @@
 
 ```bash
 # Clone o repositório
-git clone https://github.com/AsyncFuncAI/deepwiki-open.git
-cd deepwiki-open
+git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+cd freedeepwiki
 
 # Crie um arquivo .env com suas chaves de API
 echo "GOOGLE_API_KEY=sua_chave_api_google" > .env
@@ -48,7 +48,7 @@ echo "OLLAMA_HOST=seu_host_ollama" >> .env
 docker-compose up
 ```
 
-Para instruções detalhadas sobre como usar o DeepWiki com Ollama e Docker, veja [Instruções do Ollama (em inglês)](Ollama-instruction.md).
+Para instruções detalhadas sobre como usar o FreeDeepWiki com Ollama e Docker, veja [Instruções do Ollama (em inglês)](Ollama-instruction.md).
 
 > 💡 **Onde obter essas chaves:**
 > - Obtenha uma chave API Google no [Google AI Studio](https://makersuite.google.com/app/apikey)
@@ -93,7 +93,7 @@ npm run dev
 yarn dev
 ```
 
-#### Passo 4: Use o DeepWiki!
+#### Passo 4: Use o FreeDeepWiki!
 
 1. Abra [http://localhost:3000](http://localhost:3000) no seu navegador
 2. Insira um repositório GitHub, GitLab ou Bitbucket (como `https://github.com/openai/codex`, `https://github.com/microsoft/autogen`, `https://gitlab.com/gitlab-org/gitlab`, ou `https://bitbucket.org/redradish/atlassian_app_versions`)
@@ -102,7 +102,7 @@ yarn dev
 
 ## 🔍 Como Funciona
 
-O DeepWiki usa IA para:
+O FreeDeepWiki usa IA para:
 
 1. Clonar e analisar o repositório GitHub, GitLab ou Bitbucket (incluindo repositórios privados com autenticação por token)
 2. Criar embeddings do código para recuperação inteligente
@@ -135,7 +135,7 @@ graph TD
     D --> F[Criar Diagramas Visuais]
     E --> G[Organizar como Wiki]
     F --> G
-    G --> H[DeepWiki Interativo]
+    G --> H[FreeDeepWiki Interativo]
 
     classDef process stroke-width:2px;
     classDef data stroke-width:2px;
@@ -151,7 +151,7 @@ graph TD
 ## 🛠️ Estrutura do Projeto
 
 ```
-deepwiki/
+freedeepwiki/
 ├── api/                  # Servidor API backend
 │   ├── main.py           # Ponto de entrada da API
 │   ├── api.py            # Implementação FastAPI
@@ -172,7 +172,7 @@ deepwiki/
 
 ## 🤖 Sistema de Seleção de Modelos Baseado em Provedores
 
-O DeepWiki agora implementa um sistema flexível de seleção de modelos baseado em provedores, suportando múltiplos provedores de LLM:
+O FreeDeepWiki agora implementa um sistema flexível de seleção de modelos baseado em provedores, suportando múltiplos provedores de LLM:
 
 ### Provedores e Modelos Suportados
 
@@ -198,12 +198,12 @@ OPENAI_BASE_URL=https://endpoint-api-personalizado.com/v1  # Opcional, para endp
 OLLAMA_HOST=seu_host_ollama # Opcional, se Ollama não for local. padrão: http://localhost:11434
 
 # Diretório de Configuração
-DEEPWIKI_CONFIG_DIR=/caminho/para/dir/config/personalizado  # Opcional, para localização personalizada de arquivos de configuração
+FREEDEPWIKI_CONFIG_DIR=/caminho/para/dir/config/personalizado  # Opcional, para localização personalizada de arquivos de configuração
 ```
 
 ### Arquivos de Configuração
 
-O DeepWiki usa arquivos de configuração JSON para gerenciar vários aspectos do sistema:
+O FreeDeepWiki usa arquivos de configuração JSON para gerenciar vários aspectos do sistema:
 
 1. **`generator.json`**: Configuração para modelos de geração de texto
    - Define provedores de modelos disponíveis (Google, OpenAI, OpenRouter, Ollama)
@@ -219,7 +219,7 @@ O DeepWiki usa arquivos de configuração JSON para gerenciar vários aspectos d
    - Contém filtros de arquivos para excluir certos arquivos e diretórios
    - Define limites de tamanho de repositório e regras de processamento
 
-Por padrão, esses arquivos estão localizados no diretório `api/config/`. Você pode personalizar sua localização usando a variável de ambiente `DEEPWIKI_CONFIG_DIR`.
+Por padrão, esses arquivos estão localizados no diretório `api/config/`. Você pode personalizar sua localização usando a variável de ambiente `FREEDEPWIKI_CONFIG_DIR`.
 
 ### Seleção de Modelo Personalizado para Provedores de Serviço
 
@@ -239,7 +239,7 @@ A configuração base_url do Cliente OpenAI é projetada principalmente para usu
 - Permite que organizações usem seus próprios serviços LLM auto-hospedados ou implantados personalizados
 - Suporta integração com serviços compatíveis com a API OpenAI de terceiros
 
-**Em Breve**: Em atualizações futuras, o DeepWiki suportará um modo onde os usuários precisam fornecer suas próprias chaves API nas solicitações. Isso permitirá que clientes empresariais com canais privados usem seus arranjos de API existentes sem compartilhar credenciais com a implantação do DeepWiki.
+**Em Breve**: Em atualizações futuras, o FreeDeepWiki suportará um modo onde os usuários precisam fornecer suas próprias chaves API nas solicitações. Isso permitirá que clientes empresariais com canais privados usem seus arranjos de API existentes sem compartilhar credenciais com a implantação do FreeDeepWiki.
 
 ## 🤩 Usando Modelos de Embedding Compatíveis com OpenAI (ex., Alibaba Qwen)
 
@@ -257,7 +257,7 @@ Isso permite que você mude perfeitamente para qualquer serviço de embedding co
 
 ### Logging
 
-O DeepWiki usa o módulo `logging` integrado do Python para saída de diagnóstico. Você pode configurar a verbosidade e o destino do arquivo de log via variáveis de ambiente:
+O FreeDeepWiki usa o módulo `logging` integrado do Python para saída de diagnóstico. Você pode configurar a verbosidade e o destino do arquivo de log via variáveis de ambiente:
 
 | Variável        | Descrição                                                        | Padrão                      |
 |-----------------|--------------------------------------------------------------------|------------------------------|
@@ -303,30 +303,30 @@ docker-compose up
 | `OLLAMA_HOST`        | Host Ollama (padrão: http://localhost:11434)                | Não | Necessária apenas se você quiser usar servidor Ollama externo                                                  |
 | `PORT`               | Porta para o servidor API (padrão: 8001)                      | Não | Se você hospedar API e frontend na mesma máquina, certifique-se de alterar a porta de `SERVER_BASE_URL` de acordo |
 | `SERVER_BASE_URL`    | URL base para o servidor API (padrão: http://localhost:8001) | Não |
-| `DEEPWIKI_AUTH_MODE` | Defina como `true` ou `1` para habilitar o modo de autorização. | Não | Padrão é `false`. Se habilitado, `DEEPWIKI_AUTH_CODE` é necessário. |
-| `DEEPWIKI_AUTH_CODE` | O código secreto necessário para geração de wiki quando `DEEPWIKI_AUTH_MODE` está habilitado. | Não | Usado apenas se `DEEPWIKI_AUTH_MODE` for `true` ou `1`. |
+| `FREEDEPWIKI_AUTH_MODE` | Defina como `true` ou `1` para habilitar o modo de autorização. | Não | Padrão é `false`. Se habilitado, `FREEDEPWIKI_AUTH_CODE` é necessário. |
+| `FREEDEPWIKI_AUTH_CODE` | O código secreto necessário para geração de wiki quando `FREEDEPWIKI_AUTH_MODE` está habilitado. | Não | Usado apenas se `FREEDEPWIKI_AUTH_MODE` for `true` ou `1`. |
 
 Se você não estiver usando o modo ollama, você precisa configurar uma chave API OpenAI para embeddings. Outras chaves API são necessárias apenas ao configurar e usar modelos dos provedores correspondentes.
 
 ## Modo de Autorização
 
-O DeepWiki pode ser configurado para executar em um modo de autorização, onde a geração de wiki requer um código de autorização válido. Isso é útil se você quiser controlar quem pode usar o recurso de geração.
+O FreeDeepWiki pode ser configurado para executar em um modo de autorização, onde a geração de wiki requer um código de autorização válido. Isso é útil se você quiser controlar quem pode usar o recurso de geração.
 Restringe a iniciação do frontend e protege a exclusão de cache, mas não impede completamente a geração de backend se os endpoints da API forem acessados diretamente.
 
 Para habilitar o modo de autorização, defina as seguintes variáveis de ambiente:
 
-- `DEEPWIKI_AUTH_MODE`: Defina como `true` ou `1`. Quando habilitado, o frontend exibirá um campo de entrada para o código de autorização.
-- `DEEPWIKI_AUTH_CODE`: Defina como o código secreto desejado. Restringe a iniciação do frontend e protege a exclusão de cache, mas não impede completamente a geração de backend se os endpoints da API forem acessados diretamente.
+- `FREEDEPWIKI_AUTH_MODE`: Defina como `true` ou `1`. Quando habilitado, o frontend exibirá um campo de entrada para o código de autorização.
+- `FREEDEPWIKI_AUTH_CODE`: Defina como o código secreto desejado. Restringe a iniciação do frontend e protege a exclusão de cache, mas não impede completamente a geração de backend se os endpoints da API forem acessados diretamente.
 
-Se `DEEPWIKI_AUTH_MODE` não estiver definido ou estiver definido como `false` (ou qualquer outro valor diferente de `true`/`1`), o recurso de autorização será desativado, e nenhum código será necessário.
+Se `FREEDEPWIKI_AUTH_MODE` não estiver definido ou estiver definido como `false` (ou qualquer outro valor diferente de `true`/`1`), o recurso de autorização será desativado, e nenhum código será necessário.
 
 ### Configuração Docker
 
-Você pode usar Docker para executar o DeepWiki:
+Você pode usar Docker para executar o FreeDeepWiki:
 
 ```bash
 # Baixe a imagem do GitHub Container Registry
-docker pull ghcr.io/asyncfuncai/deepwiki-open:latest
+docker pull ghcr.io/asyncfuncai/freedeepwiki:latest
 
 # Execute o container com variáveis de ambiente
 docker run -p 8001:8001 -p 3000:3000 \
@@ -335,7 +335,7 @@ docker run -p 8001:8001 -p 3000:3000 \
   -e OPENROUTER_API_KEY=sua_chave_api_openrouter \
   -e OLLAMA_HOST=seu_host_ollama \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/deepwiki-open:latest
+  ghcr.io/asyncfuncai/freedeepwiki:latest
 ```
 
 Este comando também monta `~/.adalflow` no seu host para `/root/.adalflow` no container. Este caminho é usado para armazenar:
@@ -369,7 +369,7 @@ echo "OLLAMA_HOST=seu_host_ollama" >> .env
 docker run -p 8001:8001 -p 3000:3000 \
   -v $(pwd)/.env:/app/.env \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/deepwiki-open:latest
+  ghcr.io/asyncfuncai/freedeepwiki:latest
 ```
 
 Este comando também monta `~/.adalflow` no seu host para `/root/.adalflow` no container. Este caminho é usado para armazenar:
@@ -384,11 +384,11 @@ Se você quiser construir a imagem Docker localmente:
 
 ```bash
 # Clone o repositório
-git clone https://github.com/AsyncFuncAI/deepwiki-open.git
-cd deepwiki-open
+git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+cd freedeepwiki
 
 # Construa a imagem Docker
-docker build -t deepwiki-open .
+docker build -t freedeepwiki .
 
 # Execute o container
 docker run -p 8001:8001 -p 3000:3000 \
@@ -396,7 +396,7 @@ docker run -p 8001:8001 -p 3000:3000 \
   -e OPENAI_API_KEY=sua_chave_api_openai \
   -e OPENROUTER_API_KEY=sua_chave_api_openrouter \
   -e OLLAMA_HOST=seu_host_ollama \
-  deepwiki-open
+  freedeepwiki
 ```
 
 ### Detalhes do Servidor API
@@ -410,14 +410,14 @@ Para mais detalhes, veja o [README da API](./api/README.md).
 
 ## 🔌 Integração com OpenRouter
 
-O DeepWiki agora suporta [OpenRouter](https://openrouter.ai/) como provedor de modelos, dando acesso a centenas de modelos de IA através de uma única API:
+O FreeDeepWiki agora suporta [OpenRouter](https://openrouter.ai/) como provedor de modelos, dando acesso a centenas de modelos de IA através de uma única API:
 
 - **Múltiplas Opções de Modelos**: Acesse modelos da OpenAI, Anthropic, Google, Meta, Mistral e mais
 - **Configuração Simples**: Apenas adicione sua chave API OpenRouter e selecione o modelo que deseja usar
 - **Eficiência de Custo**: Escolha modelos que se adequem ao seu orçamento e necessidades de desempenho
 - **Troca Fácil**: Alterne entre diferentes modelos sem alterar seu código
 
-### Como Usar o OpenRouter com DeepWiki
+### Como Usar o OpenRouter com FreeDeepWiki
 
 1. **Obtenha uma Chave API**: Cadastre-se no [OpenRouter](https://openrouter.ai/) e obtenha sua chave API
 2. **Adicione ao Ambiente**: Adicione `OPENROUTER_API_KEY=sua_chave` ao seu arquivo `.env`
@@ -457,8 +457,8 @@ Para usar o DeepResearch, simplesmente alterne o interruptor "Pesquisa Aprofunda
 
 ## 📱 Capturas de Tela
 
-![Interface Principal do DeepWiki](screenshots/Interface.png)
-*A interface principal do DeepWiki*
+![Interface Principal do FreeDeepWiki](screenshots/Interface.png)
+*A interface principal do FreeDeepWiki*
 
 ![Suporte a Repositórios Privados](screenshots/privaterepo.png)
 *Acesse repositórios privados com tokens de acesso pessoal*
@@ -468,9 +468,9 @@ Para usar o DeepResearch, simplesmente alterne o interruptor "Pesquisa Aprofunda
 
 ### Vídeo de Demonstração
 
-[![Vídeo de Demonstração do DeepWiki](https://img.youtube.com/vi/zGANs8US8B4/0.jpg)](https://youtu.be/zGANs8US8B4)
+[![Vídeo de Demonstração do FreeDeepWiki](https://img.youtube.com/vi/zGANs8US8B4/0.jpg)](https://youtu.be/zGANs8US8B4)
 
-*Veja o DeepWiki em ação!*
+*Veja o FreeDeepWiki em ação!*
 
 ## ❓ Solução de Problemas
 
@@ -507,4 +507,4 @@ Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICE
 
 ## ⭐ Histórico de Estrelas
 
-[![Gráfico de Histórico de Estrelas](https://api.star-history.com/svg?repos=AsyncFuncAI/deepwiki-open&type=Date)](https://star-history.com/#AsyncFuncAI/deepwiki-open&Date)
+[![Gráfico de Histórico de Estrelas](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)

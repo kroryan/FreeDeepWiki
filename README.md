@@ -1,8 +1,8 @@
-# DeepWiki-Open (Grok-Wiki)
+# FreeDeepWiki (Grok-Wiki)
 
 <img width="1536" height="1024" alt="grok-wiki" src="https://github.com/user-attachments/assets/1f569784-d1c8-479d-9a99-d3ef4ad3ec84" />
 
-**DeepWiki** is my own implementation attempt of DeepWiki, automatically creates beautiful, interactive wikis for any GitHub, GitLab, or BitBucket repository! Just enter a repo name, and DeepWiki will:
+**FreeDeepWiki** is my own implementation attempt of FreeDeepWiki, automatically creates beautiful, interactive wikis for any GitHub, GitLab, or BitBucket repository! Just enter a repo name, and FreeDeepWiki will:
 
 1. Analyze the code structure
 2. Generate comprehensive documentation
@@ -16,7 +16,7 @@
 
 [English](./README.md) | [简体中文](./README.zh.md) | [繁體中文](./README.zh-tw.md) | [日本語](./README.ja.md) | [Español](./README.es.md) | [한국어](./README.kr.md) | [Tiếng Việt](./README.vi.md) | [Português Brasileiro](./README.pt-br.md) | [Français](./README.fr.md) | [Русский](./README.ru.md)
 
-## Deepwiki-Open 2.0 (Grok Wiki is now live)
+## Freedeepwiki-Open 2.0 (Grok Wiki is now live)
 
 - **Download at** https://grok-wiki.com
 
@@ -39,4 +39,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=AsyncFuncAI/deepwiki-open&type=Date)](https://star-history.com/#AsyncFuncAI/deepwiki-open&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)

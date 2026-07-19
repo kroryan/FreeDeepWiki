@@ -424,7 +424,7 @@ def get_wiki_cache_path(
         mode = "comprehensive" if comprehensive else "concise"
         variant = f"_{mode}_{page_count}"
     filename = (
-        f"deepwiki_cache_{repo_type}_{owner}_{repo}_{language}{variant}.json"
+        f"freedeepwiki_cache_{repo_type}_{owner}_{repo}_{language}{variant}.json"
     )
     return os.path.join(WIKI_CACHE_DIR, filename)
 
@@ -641,7 +641,7 @@ async def delete_wiki_cache(
                     legacy_error,
                 )
     else:
-        prefix = f"deepwiki_cache_{repo_type}_{owner}_{repo}_{language}"
+        prefix = f"freedeepwiki_cache_{repo_type}_{owner}_{repo}_{language}"
         cache_paths = [
             os.path.join(WIKI_CACHE_DIR, filename)
             for filename in os.listdir(WIKI_CACHE_DIR)
@@ -682,7 +682,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
-        "service": "deepwiki-api"
+        "service": "freedeepwiki-api"
     }
 
 @app.get("/")
@@ -717,7 +717,7 @@ async def root():
 async def get_processed_projects():
     """
     Lists all processed projects found in the wiki cache directory.
-    Projects are identified by files named like: deepwiki_cache_{repo_type}_{owner}_{repo}_{language}.json
+    Projects are identified by files named like: freedeepwiki_cache_{repo_type}_{owner}_{repo}_{language}.json
     """
     project_entries: List[ProcessedProjectEntry] = []
     # WIKI_CACHE_DIR is already defined globally in the file
@@ -732,11 +732,11 @@ async def get_processed_projects():
 
         newest_projects: Dict[tuple, ProcessedProjectEntry] = {}
         for filename in filenames:
-            if filename.startswith("deepwiki_cache_") and filename.endswith(".json"):
+            if filename.startswith("freedeepwiki_cache_") and filename.endswith(".json"):
                 file_path = os.path.join(WIKI_CACHE_DIR, filename)
                 try:
                     stats = await asyncio.to_thread(os.stat, file_path) # Use asyncio.to_thread for os.stat
-                    cache_name = filename.replace("deepwiki_cache_", "").replace(".json", "")
+                    cache_name = filename.replace("freedeepwiki_cache_", "").replace(".json", "")
                     cache_name = re.sub(
                         r"_(?:comprehensive|concise)_\d+$",
                         "",
@@ -745,7 +745,7 @@ async def get_processed_projects():
                     parts = cache_name.split('_')
 
                     # Expecting repo_type_owner_repo_language
-                    # Example: deepwiki_cache_github_AsyncFuncAI_FreeDeepWiki_en.json
+                    # Example: freedeepwiki_cache_github_AsyncFuncAI_FreeDeepWiki_en.json
                     # parts = [github, AsyncFuncAI, FreeDeepWiki, en]
                     if len(parts) >= 4:
                         repo_type = parts[0]

@@ -76,14 +76,14 @@ def start_node_server(node_bin, frontend_port, backend_port):
 
 def setup_persistent_config_and_logs():
     home_dir = os.path.expanduser("~")
-    deepwiki_dir = os.path.join(home_dir, ".deepwiki")
-    config_dir = os.path.join(deepwiki_dir, "config")
-    logs_dir = os.path.join(deepwiki_dir, "logs")
+    freedeepwiki_dir = os.path.join(home_dir, ".freedeepwiki")
+    config_dir = os.path.join(freedeepwiki_dir, "config")
+    logs_dir = os.path.join(freedeepwiki_dir, "logs")
     
     os.makedirs(config_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
     
-    # Copy default config templates from api/config in the bundle to ~/.deepwiki/config
+    # Copy default config templates from api/config in the bundle to ~/.freedeepwiki/config
     default_config_src = os.path.join(BASE_DIR, "api", "config")
     if os.path.exists(default_config_src):
         for item in os.listdir(default_config_src):
@@ -94,7 +94,7 @@ def setup_persistent_config_and_logs():
                 shutil.copy2(src_file, dest_file)
                 
     # Set config environment variables
-    os.environ["DEEPWIKI_CONFIG_DIR"] = config_dir
+    os.environ["FREEDEPWIKI_CONFIG_DIR"] = config_dir
     os.environ["LOG_FILE_PATH"] = os.path.join(logs_dir, "application.log")
     
     # Set TIKTOKEN_CACHE_DIR to the bundled cache if it exists in BASE_DIR
@@ -127,14 +127,14 @@ def is_port_open(port):
 
 def main():
     print("=" * 60)
-    print("                DEEPWIKI STANDALONE RUNNER")
+    print("                FREEDEPWIKI STANDALONE RUNNER")
     print("=" * 60)
     
     # Initialize dirs & paths
     setup_persistent_config_and_logs()
     
     # Find free ports
-    backend_port = int(os.environ.get("DEEPWIKI_API_PORT", find_free_port(8001)))
+    backend_port = int(os.environ.get("FREEDEPWIKI_API_PORT", find_free_port(8001)))
     frontend_port = int(os.environ.get("PORT", find_free_port(3000)))
     
     # Locate Node.js executable
@@ -185,7 +185,7 @@ def main():
     print(f"Opening browser at: {url}")
     webbrowser.open(url)
     
-    print("\nDeepWiki is running successfully!")
+    print("\nFreeDeepWiki is running successfully!")
     print("Press Ctrl+C in this terminal window to stop the application.")
     print("=" * 60)
     
@@ -197,7 +197,7 @@ def main():
                 break
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\nStopping DeepWiki...")
+        print("\nStopping FreeDeepWiki...")
     finally:
         if node_process:
             node_process.terminate()

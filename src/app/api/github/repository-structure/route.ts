@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const checkout = await mkdtemp(join(tmpdir(), 'deepwiki-github-'));
+  const checkout = await mkdtemp(join(tmpdir(), 'freedeepwiki-github-'));
   const repositoryUrl = `https://github.com/${owner}/${repo}.git`;
 
   try {

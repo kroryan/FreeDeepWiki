@@ -52,13 +52,13 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller deepwiki.spec
+          pyinstaller freedeepwiki.spec
 
       - name: Rename and upload Windows binary
         uses: actions/upload-artifact@v4
         with:
-          name: deepwiki-windows
-          path: dist/deepwiki.exe
+          name: freedeepwiki-windows
+          path: dist/freedeepwiki.exe
 
   build-linux:
     runs-on: ubuntu-latest
@@ -100,7 +100,7 @@ jobs:
 
       - name: Build with PyInstaller
         run: |
-          pyinstaller deepwiki.spec
+          pyinstaller freedeepwiki.spec
 
       - name: Package AppImage
         run: |
@@ -108,24 +108,24 @@ jobs:
           mkdir -p AppDir/usr/bin
           
           # 2. Copy launcher binary and assets
-          cp dist/deepwiki AppDir/usr/bin/
-          cp public/deepwiki.svg AppDir/deepwiki.svg
+          cp dist/freedeepwiki AppDir/usr/bin/
+          cp public/freedeepwiki.svg AppDir/freedeepwiki.svg
           
           # 3. Create AppRun script
           cat << 'EOF' > AppDir/AppRun
           #!/bin/sh
           SELF=$(readlink -f "$0")
           HERE=$(dirname "$SELF")
-          exec "$HERE/usr/bin/deepwiki" "$@"
+          exec "$HERE/usr/bin/freedeepwiki" "$@"
           EOF
           chmod +x AppDir/AppRun
           
           # 4. Create desktop entry
-          cat << 'EOF' > AppDir/deepwiki.desktop
+          cat << 'EOF' > AppDir/freedeepwiki.desktop
           [Desktop Entry]
           Name=FreeDeepWiki
-          Exec=deepwiki
-          Icon=deepwiki
+          Exec=freedeepwiki
+          Icon=freedeepwiki
           Type=Application
           Categories=Development;
           Comment=AI-powered wiki generation and code analysis
@@ -142,7 +142,7 @@ jobs:
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v4
         with:
-          name: deepwiki-linux
+          name: freedeepwiki-linux
           path: FreeDeepWiki-x86_64.AppImage
 
   publish-release:
@@ -152,19 +152,19 @@ jobs:
       - name: Download Windows binary
         uses: actions/download-artifact@v4
         with:
-          name: deepwiki-windows
+          name: freedeepwiki-windows
           path: ./artifacts/windows
 
       - name: Download Linux AppImage
         uses: actions/download-artifact@v4
         with:
-          name: deepwiki-linux
+          name: freedeepwiki-linux
           path: ./artifacts/linux
 
       - name: Setup environment for Release
         run: |
           # Arrange files
-          mv ./artifacts/windows/deepwiki.exe ./FreeDeepWiki-windows-x64.exe
+          mv ./artifacts/windows/freedeepwiki.exe ./FreeDeepWiki-windows-x64.exe
           mv ./artifacts/linux/FreeDeepWiki-x86_64.AppImage ./FreeDeepWiki-x86_64.AppImage
           
           # Check if this is a tag or a commit push

@@ -1,5 +1,5 @@
 services:
-  deepwiki:
+  freedeepwiki:
     build:
       context: .
       dockerfile: Dockerfile

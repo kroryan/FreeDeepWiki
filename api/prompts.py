@@ -1,4 +1,4 @@
-"""Module containing all prompts used in the DeepWiki project."""
+"""Module containing all prompts used in the FreeDeepWiki project."""
 
 # System prompt for RAG
 RAG_SYSTEM_PROMPT = r"""

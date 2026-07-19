@@ -1,8 +1,8 @@
-# DeepWiki-Open
+# FreeDeepWiki
 
-![Баннер DeepWiki](screenshots/Deepwiki.png)
+![Баннер FreeDeepWiki](screenshots/Freedeepwiki.png)
 
-**DeepWiki** — это моя собственная реализация DeepWiki, автоматически создающая красивые, интерактивные вики по любому репозиторию на GitHub, GitLab или BitBucket! Просто укажите название репозитория, и DeepWiki выполнит:
+**FreeDeepWiki** — это моя собственная реализация FreeDeepWiki, автоматически создающая красивые, интерактивные вики по любому репозиторию на GitHub, GitLab или BitBucket! Просто укажите название репозитория, и FreeDeepWiki выполнит:
 
 1. Анализ структуры кода
 2. Генерацию полноценной документации
@@ -33,8 +33,8 @@
 
 ```bash
 # Клонируйте репозиторий
-git clone https://github.com/AsyncFuncAI/deepwiki-open.git
-cd deepwiki-open
+git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+cd freedeepwiki
 
 # Создайте файл .env с вашими API-ключами
 echo "GOOGLE_API_KEY=ваш_google_api_key" > .env
@@ -101,7 +101,7 @@ npm run dev
 yarn dev
 ```
 
-#### Шаг 4: Используйте DeepWiki!
+#### Шаг 4: Используйте FreeDeepWiki!
 
 1. Откройте [http://localhost:3000](http://localhost:3000) в браузере
 2. Введите URL репозитория (например, `https://github.com/openai/codex`)
@@ -110,7 +110,7 @@ yarn dev
 
 ## 🔍 Как это работает
 
-DeepWiki использует искусственный интеллект, чтобы:
+FreeDeepWiki использует искусственный интеллект, чтобы:
 
 1. Клонировать и проанализировать репозиторий GitHub, GitLab или Bitbucket (включая приватные — с использованием токенов)
 2. Создать эмбеддинги кода для интеллектуального поиска
@@ -145,7 +145,7 @@ graph TD
     D --> F[Создание диаграмм]
     E --> G[Формирование вики]
     F --> G
-    G --> H[Интерактивная DeepWiki]
+    G --> H[Интерактивная FreeDeepWiki]
 
     classDef process stroke-width:2px;
     classDef data stroke-width:2px;
@@ -161,7 +161,7 @@ graph TD
 ## 🛠️ Структура проекта
 
 ```
-deepwiki/
+freedeepwiki/
 ├── api/                  # Backend API сервер
 │   ├── main.py           # Точка входа API
 │   ├── api.py            # Реализация через FastAPI
@@ -182,7 +182,7 @@ deepwiki/
 
 ## 🤖 Система выбора моделей по провайдерам
 
-DeepWiki поддерживает гибкую систему выбора моделей от разных поставщиков:
+FreeDeepWiki поддерживает гибкую систему выбора моделей от разных поставщиков:
 
 ### Поддерживаемые провайдеры и модели
 
@@ -211,18 +211,18 @@ OPENAI_BASE_URL=https://ваш-кастомный-api/v1
 OLLAMA_HOST=http://localhost:11434
 
 # Каталог конфигурации
-DEEPWIKI_CONFIG_DIR=/путь/к/конфигурации
+FREEDEPWIKI_CONFIG_DIR=/путь/к/конфигурации
 ```
 
 ### Конфигурационные файлы
 
-DeepWiki использует JSON-файлы для настройки:
+FreeDeepWiki использует JSON-файлы для настройки:
 
 1. **`generator.json`** — конфигурация генерации текста и моделей
 2. **`embedder.json`** — настройки эмбеддингов и ретривера
 3. **`repo.json`** — правила обработки репозиториев
 
-По умолчанию хранятся в `api/config/`, путь можно изменить через `DEEPWIKI_CONFIG_DIR`.
+По умолчанию хранятся в `api/config/`, путь можно изменить через `FREEDEPWIKI_CONFIG_DIR`.
 
 ### Кастомизация для сервис-провайдеров
 
@@ -242,7 +242,7 @@ DeepWiki использует JSON-файлы для настройки:
 - Подключаться к self-hosted решениям
 - Интегрироваться с совместимыми сторонними сервисами
 
-**Скоро**: DeepWiki получит режим, в котором пользователи будут указывать свои API-ключи напрямую в запросах — удобно для корпоративных решений.
+**Скоро**: FreeDeepWiki получит режим, в котором пользователи будут указывать свои API-ключи напрямую в запросах — удобно для корпоративных решений.
 
 ## 🧩 Использование совместимых с OpenAI моделей (например, Alibaba Qwen)
 
@@ -259,7 +259,7 @@ OPENAI_BASE_URL=совместимый_endpoint
 
 ### Логирование
 
-DeepWiki использует стандартный `logging` из Python. Настраивается через:
+FreeDeepWiki использует стандартный `logging` из Python. Настраивается через:
 
 | Переменная        | Описание                                      | Значение по умолчанию         |
 |------------------|-----------------------------------------------|-------------------------------|
@@ -310,19 +310,19 @@ docker-compose up
 | `OLLAMA_HOST`            | Хост Ollama (по умолчанию http://localhost:11434)                      | Нет         | Указывается при использовании внешнего сервера Ollama                                         |
 | `PORT`                   | Порт API-сервера (по умолчанию 8001)                                   | Нет         | Меняйте, если frontend и backend работают на одной машине                                     |
 | `SERVER_BASE_URL`        | Базовый URL для API (по умолчанию http://localhost:8001)               | Нет         |                                                                                               |
-| `DEEPWIKI_AUTH_MODE`     | Включает режим авторизации (true или 1)                                | Нет         | Если включён, потребуется код из `DEEPWIKI_AUTH_CODE`                                         |
-| `DEEPWIKI_AUTH_CODE`     | Секретный код для запуска генерации                                    | Нет         | Только если включён режим авторизации                                                         |
+| `FREEDEPWIKI_AUTH_MODE`     | Включает режим авторизации (true или 1)                                | Нет         | Если включён, потребуется код из `FREEDEPWIKI_AUTH_CODE`                                         |
+| `FREEDEPWIKI_AUTH_CODE`     | Секретный код для запуска генерации                                    | Нет         | Только если включён режим авторизации                                                         |
 
 Если не используете Ollama, обязательно настройте OpenAI API ключ.
 
 ## Режим авторизации
 
-DeepWiki может быть запущен в режиме авторизации — для генерации вики потребуется ввести секретный код. Это полезно, если вы хотите ограничить доступ к функциональности.
+FreeDeepWiki может быть запущен в режиме авторизации — для генерации вики потребуется ввести секретный код. Это полезно, если вы хотите ограничить доступ к функциональности.
 
 Для включения:
 
-- `DEEPWIKI_AUTH_MODE=true`
-- `DEEPWIKI_AUTH_CODE=секретный_код`
+- `FREEDEPWIKI_AUTH_MODE=true`
+- `FREEDEPWIKI_AUTH_CODE=секретный_код`
 
 Это ограничивает доступ с фронтенда и защищает кэш, но не блокирует прямые вызовы API.
 
@@ -333,7 +333,7 @@ DeepWiki может быть запущен в режиме авторизаци
 #### Запуск контейнера
 
 ```bash
-docker pull ghcr.io/asyncfuncai/deepwiki-open:latest
+docker pull ghcr.io/asyncfuncai/freedeepwiki:latest
 
 docker run -p 8001:8001 -p 3000:3000 \
   -e GOOGLE_API_KEY=... \
@@ -344,7 +344,7 @@ docker run -p 8001:8001 -p 3000:3000 \
   -e AZURE_OPENAI_ENDPOINT=... \
   -e AZURE_OPENAI_VERSION=... \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/deepwiki-open:latest
+  ghcr.io/asyncfuncai/freedeepwiki:latest
 ```
 
 Каталог `~/.adalflow` содержит:
@@ -368,22 +368,22 @@ echo "GOOGLE_API_KEY=..." > .env
 docker run -p 8001:8001 -p 3000:3000 \
   -v $(pwd)/.env:/app/.env \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/deepwiki-open:latest
+  ghcr.io/asyncfuncai/freedeepwiki:latest
 ```
 
 #### Локальная сборка Docker-образа
 
 ```bash
-git clone https://github.com/AsyncFuncAI/deepwiki-open.git
-cd deepwiki-open
+git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+cd freedeepwiki
 
-docker build -t deepwiki-open .
+docker build -t freedeepwiki .
 
 docker run -p 8001:8001 -p 3000:3000 \
   -e GOOGLE_API_KEY=... \
   -e OPENAI_API_KEY=... \
   ... \
-  deepwiki-open
+  freedeepwiki
 ```
 
 #### Самоподписанные сертификаты
@@ -453,7 +453,7 @@ docker build --build-arg CUSTOM_CERT_DIR=certs .
 ## 📱 Скриншоты
 
 ![Интерфейс](screenshots/Interface.png)  
-*Основной интерфейс DeepWiki*
+*Основной интерфейс FreeDeepWiki*
 
 ![Приватный доступ](screenshots/privaterepo.png)  
 *Доступ к приватным репозиториям*
@@ -506,4 +506,4 @@ docker build --build-arg CUSTOM_CERT_DIR=certs .
 
 ## ⭐ История звёзд
 
-[![График звёзд](https://api.star-history.com/svg?repos=AsyncFuncAI/deepwiki-open&type=Date)](https://star-history.com/#AsyncFuncAI/deepwiki-open&Date)
+[![График звёзд](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)

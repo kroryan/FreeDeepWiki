@@ -100,7 +100,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='deepwiki',
+    name='freedeepwiki',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

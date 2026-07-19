@@ -1,8 +1,8 @@
-# DeepWiki-Open
+# FreeDeepWiki
 
-![Banner de DeepWiki](screenshots/Deepwiki.png)
+![Banner de FreeDeepWiki](screenshots/Freedeepwiki.png)
 
-**DeepWiki** crea automáticamente wikis hermosas e interactivas para cualquier repositorio de GitHub, GitLab o BitBucket. ¡Solo ingresa el nombre de un repositorio y DeepWiki:
+**FreeDeepWiki** crea automáticamente wikis hermosas e interactivas para cualquier repositorio de GitHub, GitLab o BitBucket. ¡Solo ingresa el nombre de un repositorio y FreeDeepWiki:
 
 1. Analizará la estructura del código
 2. Generará documentación completa
@@ -33,8 +33,8 @@
 
 ```bash
 # Clonar el repositorio
-git clone https://github.com/AsyncFuncAI/deepwiki-open.git
-cd deepwiki-open
+git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+cd freedeepwiki
 
 # Crear un archivo .env con tus claves API
 echo "GOOGLE_API_KEY=your_google_api_key" > .env
@@ -94,7 +94,7 @@ npm run dev
 yarn dev
 ```
 
-#### Paso 4: ¡Usar DeepWiki!
+#### Paso 4: ¡Usar FreeDeepWiki!
 
 1. Abre [http://localhost:3000](http://localhost:3000) en tu navegador
 2. Ingresa un repositorio de GitHub, GitLab o Bitbucket (como `https://github.com/openai/codex`, `https://github.com/microsoft/autogen`, `https://gitlab.com/gitlab-org/gitlab`, o `https://bitbucket.org/redradish/atlassian_app_versions`)
@@ -103,7 +103,7 @@ yarn dev
 
 ## 🔍 Cómo Funciona
 
-DeepWiki usa IA para:
+FreeDeepWiki usa IA para:
 
 1. Clonar y analizar el repositorio de GitHub, GitLab o Bitbucket (incluyendo repos privados con autenticación por token)
 2. Crear embeddings del código para recuperación inteligente
@@ -136,7 +136,7 @@ graph TD
     D --> F[Crear Diagramas Visuales]
     E --> G[Organizar como Wiki]
     F --> G
-    G --> H[DeepWiki Interactiva]
+    G --> H[FreeDeepWiki Interactiva]
 
     classDef process stroke-width:2px;
     classDef data stroke-width:2px;
@@ -152,7 +152,7 @@ graph TD
 ## 🛠️ Estructura del Proyecto
 
 ```
-deepwiki/
+freedeepwiki/
 ├── api/                  # Servidor API backend
 │   ├── main.py           # Punto de entrada de la API
 │   ├── api.py            # Implementación FastAPI
@@ -173,7 +173,7 @@ deepwiki/
 
 ## 🤖 Sistema de Selección de Modelos Basado en Proveedores
 
-DeepWiki ahora implementa un sistema flexible de selección de modelos basado en proveedores que soporta múltiples proveedores de LLM:
+FreeDeepWiki ahora implementa un sistema flexible de selección de modelos basado en proveedores que soporta múltiples proveedores de LLM:
 
 ### Proveedores y Modelos Soportados
 
@@ -196,12 +196,12 @@ OPENROUTER_API_KEY=tu_clave_api_openrouter # Requerida para modelos OpenRouter
 OPENAI_BASE_URL=https://punto-final-personalizado.com/v1  # Opcional, para endpoints personalizados de OpenAI API
 
 # Directorio de Configuración
-DEEPWIKI_CONFIG_DIR=/ruta/a/directorio/config/personalizado  # Opcional, para ubicación personalizada de archivos de configuración
+FREEDEPWIKI_CONFIG_DIR=/ruta/a/directorio/config/personalizado  # Opcional, para ubicación personalizada de archivos de configuración
 ```
 
 ### Archivos de Configuración
 
-DeepWiki utiliza archivos de configuración JSON para gestionar varios aspectos del sistema:
+FreeDeepWiki utiliza archivos de configuración JSON para gestionar varios aspectos del sistema:
 
 1. **`generator.json`**: Configuración para modelos de generación de texto
    - Define los proveedores de modelos disponibles (Google, OpenAI, OpenRouter, Ollama)
@@ -217,7 +217,7 @@ DeepWiki utiliza archivos de configuración JSON para gestionar varios aspectos 
    - Contiene filtros de archivos para excluir ciertos archivos y directorios
    - Define límites de tamaño de repositorio y reglas de procesamiento
 
-Por defecto, estos archivos se encuentran en el directorio `api/config/`. Puedes personalizar su ubicación usando la variable de entorno `DEEPWIKI_CONFIG_DIR`.
+Por defecto, estos archivos se encuentran en el directorio `api/config/`. Puedes personalizar su ubicación usando la variable de entorno `FREEDEPWIKI_CONFIG_DIR`.
 
 ### Selección de Modelos Personalizados para Proveedores de Servicios
 
@@ -237,7 +237,7 @@ La configuración de base_url del Cliente OpenAI está diseñada principalmente 
 - Permite a las organizaciones usar sus propios servicios LLM auto-alojados o desplegados a medida
 - Soporta integración con servicios de terceros compatibles con la API de OpenAI
 
-**Próximamente**: En futuras actualizaciones, DeepWiki soportará un modo donde los usuarios deberán proporcionar sus propias claves API en las solicitudes. Esto permitirá a los clientes empresariales con canales privados utilizar sus disposiciones API existentes sin compartir credenciales con el despliegue de DeepWiki.
+**Próximamente**: En futuras actualizaciones, FreeDeepWiki soportará un modo donde los usuarios deberán proporcionar sus propias claves API en las solicitudes. Esto permitirá a los clientes empresariales con canales privados utilizar sus disposiciones API existentes sin compartir credenciales con el despliegue de FreeDeepWiki.
 
 ## 🧩 Uso de modelos de embedding compatibles con OpenAI (por ejemplo, Alibaba Qwen)
 
@@ -280,8 +280,8 @@ Para usar Investigación Profunda, simplemente activa el interruptor "Investigac
 
 ## 📱 Capturas de Pantalla
 
-![Interfaz Principal de DeepWiki](screenshots/Interface.png)
-*La interfaz principal de DeepWiki*
+![Interfaz Principal de FreeDeepWiki](screenshots/Interface.png)
+*La interfaz principal de FreeDeepWiki*
 
 ![Soporte para Repositorios Privados](screenshots/privaterepo.png)
 *Acceso a repositorios privados con tokens de acceso personal*
@@ -291,9 +291,9 @@ Para usar Investigación Profunda, simplemente activa el interruptor "Investigac
 
 ### Video de Demostración
 
-[![Video de Demostración de DeepWiki](https://img.youtube.com/vi/zGANs8US8B4/0.jpg)](https://youtu.be/zGANs8US8B4)
+[![Video de Demostración de FreeDeepWiki](https://img.youtube.com/vi/zGANs8US8B4/0.jpg)](https://youtu.be/zGANs8US8B4)
 
-*¡Mira DeepWiki en acción!*
+*¡Mira FreeDeepWiki en acción!*
 
 ## ❓ Solución de Problemas
 
@@ -330,5 +330,5 @@ Este proyecto está licenciado bajo la Licencia MIT - consulta el archivo [LICEN
 
 ## ⭐ Historial de Estrellas
 
-[![Gráfico de Historial de Estrellas](https://api.star-history.com/svg?repos=AsyncFuncAI/deepwiki-open&type=Date)](https://star-history.com/#AsyncFuncAI/deepwiki-open&Date)
+[![Gráfico de Historial de Estrellas](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)
 

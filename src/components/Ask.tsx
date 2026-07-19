@@ -99,7 +99,7 @@ const Ask: React.FC<AskProps> = ({
   const modelRef = useRef(model);
   const loadedSessionIdRef = useRef<string | null>(null);
   const storageKey = useMemo(
-    () => `deepwiki-chat-sessions:${repoInfo.type}:${repoInfo.owner}:${repoInfo.repo}`,
+    () => `freedeepwiki-chat-sessions:${repoInfo.type}:${repoInfo.owner}:${repoInfo.repo}`,
     [repoInfo.type, repoInfo.owner, repoInfo.repo],
   );
   const createSession = (title?: string): ChatSession => {

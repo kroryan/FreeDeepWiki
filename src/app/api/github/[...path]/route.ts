@@ -46,7 +46,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
       {
         message:
           'GitHub anonymous API rate limit exceeded. Configure GITHUB_TOKEN ' +
-          'in deepwiki.env or provide a token in the DeepWiki configuration.',
+          'in freedeepwiki.env or provide a token in the FreeDeepWiki configuration.',
       },
       { status: 403 }
     );

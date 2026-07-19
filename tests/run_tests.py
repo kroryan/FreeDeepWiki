@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test runner for DeepWiki project.
+Test runner for FreeDeepWiki project.
 
 This script provides a unified way to run all tests or specific test categories.
 """
@@ -126,7 +126,7 @@ def check_environment():
         print("❌ requests not available - install with: pip install requests")
 
 def main():
-    parser = argparse.ArgumentParser(description="Run DeepWiki tests")
+    parser = argparse.ArgumentParser(description="Run FreeDeepWiki tests")
     parser.add_argument("--unit", action="store_true", help="Run only unit tests")
     parser.add_argument("--integration", action="store_true", help="Run only integration tests")
     parser.add_argument("--api", action="store_true", help="Run only API tests")

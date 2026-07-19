@@ -132,7 +132,7 @@ class OpenRouterClient(ModelClient):
                 "Authorization": f"Bearer {self.async_client['api_key']}",
                 "Content-Type": "application/json",
                 "HTTP-Referer": "https://github.com/AsyncFuncAI/FreeDeepWiki",  # Optional
-                "X-Title": "DeepWiki"  # Optional
+                "X-Title": "FreeDeepWiki"  # Optional
             }
 
             # Always use non-streaming mode for OpenRouter
