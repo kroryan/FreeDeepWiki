@@ -21,7 +21,7 @@ OLLAMA_REQUEST_TIMEOUT="${OLLAMA_REQUEST_TIMEOUT:-1800}"
 OLLAMA_HEALTH_TIMEOUT="${OLLAMA_HEALTH_TIMEOUT:-60}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 DEEPWIKI_API_PORT="${DEEPWIKI_API_PORT:-8001}"
-DEEPWIKI_PROJECT_NAME="${DEEPWIKI_PROJECT_NAME:-deepwiki-open-local}"
+DEEPWIKI_PROJECT_NAME="${DEEPWIKI_PROJECT_NAME:-freedeepwiki-local}"
 DEEPWIKI_NETWORK_MODE="${DEEPWIKI_NETWORK_MODE:-auto}"
 EFFECTIVE_NETWORK_MODE="${DEEPWIKI_NETWORK_MODE}"
 OLLAMA_CONTAINER_ENDPOINT="${OLLAMA_ENDPOINT}"
@@ -460,12 +460,12 @@ case "${COMMAND}" in
     compose config --quiet
     EFFECTIVE_NETWORK_MODE="${original_network_mode}"
 
-    docker image inspect deepwiki-open:ollama >/dev/null 2>&1 ||
+    docker image inspect freedeepwiki:ollama >/dev/null 2>&1 ||
       die "Falta la imagen. Ejecuta './deepwiki.sh setup' primero."
     docker run --rm \
       --volume "${ROOT_DIR}:/workspace" \
       --workdir /workspace \
-      deepwiki-open:ollama \
+      freedeepwiki:ollama \
       python -m pytest -q \
         test/test_deepwiki_config.py \
         test/test_extract_repo_name.py \

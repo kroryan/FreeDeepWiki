@@ -24,7 +24,7 @@ export async function GET(request: NextRequest, context: RouteContext) {
 
   const headers: HeadersInit = {
     Accept: 'application/vnd.github+json',
-    'User-Agent': 'deepwiki-open',
+    'User-Agent': 'FreeDeepWiki',
     'X-GitHub-Api-Version': '2022-11-28',
   };
   if (authorization) {

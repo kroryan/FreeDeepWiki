@@ -71,3 +71,8 @@ certs/
 # Local DeepWiki/Ollama runtime state
 /.deepwiki/
 /deepwiki.env
+
+# Standalone build directories
+/bin/
+/tiktoken_cache/
+

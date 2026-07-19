@@ -745,8 +745,8 @@ async def get_processed_projects():
                     parts = cache_name.split('_')
 
                     # Expecting repo_type_owner_repo_language
-                    # Example: deepwiki_cache_github_AsyncFuncAI_deepwiki-open_en.json
-                    # parts = [github, AsyncFuncAI, deepwiki-open, en]
+                    # Example: deepwiki_cache_github_AsyncFuncAI_FreeDeepWiki_en.json
+                    # parts = [github, AsyncFuncAI, FreeDeepWiki, en]
                     if len(parts) >= 4:
                         repo_type = parts[0]
                         owner = parts[1]

@@ -2,7 +2,7 @@
 # docker-compose.yml so upstream updates can be merged without conflicts.
 services:
   deepwiki:
-    image: deepwiki-open:ollama
+    image: freedeepwiki:ollama
     env_file: !reset []
     environment:
       PORT: "${PORT:-8001}"

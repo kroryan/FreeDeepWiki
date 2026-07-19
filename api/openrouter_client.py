@@ -131,7 +131,7 @@ class OpenRouterClient(ModelClient):
             headers = {
                 "Authorization": f"Bearer {self.async_client['api_key']}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/AsyncFuncAI/deepwiki-open",  # Optional
+                "HTTP-Referer": "https://github.com/AsyncFuncAI/FreeDeepWiki",  # Optional
                 "X-Title": "DeepWiki"  # Optional
             }
 

@@ -61,7 +61,7 @@ def discover_ollama_models(endpoint: str) -> tuple[list[str], list[str]]:
     url = f"{endpoint.rstrip('/')}/api/tags"
     request = urllib.request.Request(
         url,
-        headers={"Accept": "application/json", "User-Agent": "deepwiki-open"},
+        headers={"Accept": "application/json", "User-Agent": "FreeDeepWiki"},
     )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:

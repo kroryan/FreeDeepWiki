@@ -42,16 +42,17 @@ jobs:
       - name: Install Python dependencies
         working-directory: api
         run: |
+          poetry config virtualenvs.create false
           poetry install --only main
-          poetry run pip install pyinstaller
+          pip install pyinstaller
 
       - name: Prepare build assets
         run: |
-          poetry -C api run python scripts/prepare_assets.py windows
+          python scripts/prepare_assets.py windows
 
       - name: Build with PyInstaller
         run: |
-          poetry -C api run pyinstaller deepwiki.spec
+          pyinstaller deepwiki.spec
 
       - name: Rename and upload Windows binary
         uses: actions/upload-artifact@v4
@@ -89,16 +90,17 @@ jobs:
       - name: Install Python dependencies
         working-directory: api
         run: |
+          poetry config virtualenvs.create false
           poetry install --only main
-          poetry run pip install pyinstaller
+          pip install pyinstaller
 
       - name: Prepare build assets
         run: |
-          poetry -C api run python scripts/prepare_assets.py linux
+          python scripts/prepare_assets.py linux
 
       - name: Build with PyInstaller
         run: |
-          poetry -C api run pyinstaller deepwiki.spec
+          pyinstaller deepwiki.spec
 
       - name: Package AppImage
         run: |
@@ -121,7 +123,7 @@ jobs:
           # 4. Create desktop entry
           cat << 'EOF' > AppDir/deepwiki.desktop
           [Desktop Entry]
-          Name=DeepWiki
+          Name=FreeDeepWiki
           Exec=deepwiki
           Icon=deepwiki
           Type=Application
@@ -135,13 +137,13 @@ jobs:
           chmod +x appimagetool-x86_64.AppImage
           
           export APPIMAGE_EXTRACT_AND_RUN=1
-          ./appimagetool-x86_64.AppImage AppDir deepwiki-x86_64.AppImage
+          ./appimagetool-x86_64.AppImage AppDir FreeDeepWiki-x86_64.AppImage
 
       - name: Upload Linux AppImage
         uses: actions/upload-artifact@v4
         with:
           name: deepwiki-linux
-          path: deepwiki-x86_64.AppImage
+          path: FreeDeepWiki-x86_64.AppImage
 
   publish-release:
     runs-on: ubuntu-latest
@@ -162,8 +164,8 @@ jobs:
       - name: Setup environment for Release
         run: |
           # Arrange files
-          mv ./artifacts/windows/deepwiki.exe ./deepwiki-windows-x64.exe
-          mv ./artifacts/linux/deepwiki-x86_64.AppImage ./deepwiki-x86_64.AppImage
+          mv ./artifacts/windows/deepwiki.exe ./FreeDeepWiki-windows-x64.exe
+          mv ./artifacts/linux/FreeDeepWiki-x86_64.AppImage ./FreeDeepWiki-x86_64.AppImage
           
           # Check if this is a tag or a commit push
           if [[ "${{ github.ref }}" == refs/tags/* ]]; then
@@ -184,18 +186,18 @@ jobs:
           prerelease: ${{ env.IS_PRERELEASE == 'true' }}
           draft: false
           body: |
-            Automatic pre-release builds of DeepWiki.
+            Automatic pre-release builds of FreeDeepWiki.
             
             - Built from branch: `${{ github.ref_name }}`
             - Commit: `${{ github.sha }}`
             - Built at: ${{ github.event.head_commit.timestamp || 'N/A' }}
             
             ### Standalone Executables
-            - **Windows**: [deepwiki-windows-x64.exe](https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/deepwiki-windows-x64.exe)
-            - **Linux (AppImage)**: [deepwiki-x86_64.AppImage](https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/deepwiki-x86_64.AppImage)
+            - **Windows**: [FreeDeepWiki-windows-x64.exe](https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/FreeDeepWiki-windows-x64.exe)
+            - **Linux (AppImage)**: [FreeDeepWiki-x86_64.AppImage](https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/FreeDeepWiki-x86_64.AppImage)
             
             *No installation is required. Simply download and run the binary for your platform.*
           files: |
-            deepwiki-windows-x64.exe
-            deepwiki-x86_64.AppImage
+            FreeDeepWiki-windows-x64.exe
+            FreeDeepWiki-x86_64.AppImage
           make_latest: ${{ env.IS_PRERELEASE == 'false' }}
