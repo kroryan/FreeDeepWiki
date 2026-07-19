@@ -2,9 +2,10 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ThemeProvider } from "next-themes";
 import { LanguageProvider } from "@/contexts/LanguageContext";
+import CyberBackground from "@/components/CyberBackground";
 
 export const metadata: Metadata = {
-  title: "Deepwiki Open Source | Sheing Ng",
+  title: "FreeDeepWiki Open Source | Sheing Ng",
   description: "Created by Sheing Ng",
 };
 
@@ -23,9 +24,10 @@ export default function RootLayout({
           rel="stylesheet"
         />
       </head>
-      <body className="antialiased">
+      <body className="antialiased relative min-h-screen">
         <ThemeProvider attribute="data-theme" defaultTheme="system" enableSystem>
           <LanguageProvider>
+            <CyberBackground />
             {children}
           </LanguageProvider>
         </ThemeProvider>
