@@ -1,0 +1,201 @@
+name: Release Build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Node.js dependencies and build frontend
+        run: |
+          npm ci --legacy-peer-deps
+          npm run build
+
+      - name: Install Poetry
+        run: |
+          pip install poetry==2.0.1
+
+      - name: Install Python dependencies
+        working-directory: api
+        run: |
+          poetry install --only main
+          poetry run pip install pyinstaller
+
+      - name: Prepare build assets
+        run: |
+          poetry -C api run python scripts/prepare_assets.py windows
+
+      - name: Build with PyInstaller
+        run: |
+          poetry -C api run pyinstaller deepwiki.spec
+
+      - name: Rename and upload Windows binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepwiki-windows
+          path: dist/deepwiki.exe
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Node.js dependencies and build frontend
+        run: |
+          npm ci --legacy-peer-deps
+          npm run build
+
+      - name: Install Poetry
+        run: |
+          pip install poetry==2.0.1
+
+      - name: Install Python dependencies
+        working-directory: api
+        run: |
+          poetry install --only main
+          poetry run pip install pyinstaller
+
+      - name: Prepare build assets
+        run: |
+          poetry -C api run python scripts/prepare_assets.py linux
+
+      - name: Build with PyInstaller
+        run: |
+          poetry -C api run pyinstaller deepwiki.spec
+
+      - name: Package AppImage
+        run: |
+          # 1. Create AppDir structure
+          mkdir -p AppDir/usr/bin
+          
+          # 2. Copy launcher binary and assets
+          cp dist/deepwiki AppDir/usr/bin/
+          cp public/deepwiki.svg AppDir/deepwiki.svg
+          
+          # 3. Create AppRun script
+          cat << 'EOF' > AppDir/AppRun
+          #!/bin/sh
+          SELF=$(readlink -f "$0")
+          HERE=$(dirname "$SELF")
+          exec "$HERE/usr/bin/deepwiki" "$@"
+          EOF
+          chmod +x AppDir/AppRun
+          
+          # 4. Create desktop entry
+          cat << 'EOF' > AppDir/deepwiki.desktop
+          [Desktop Entry]
+          Name=DeepWiki
+          Exec=deepwiki
+          Icon=deepwiki
+          Type=Application
+          Categories=Development;
+          Comment=AI-powered wiki generation and code analysis
+          Terminal=true
+          EOF
+          
+          # 5. Download and run appimagetool
+          curl -LO https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          
+          export APPIMAGE_EXTRACT_AND_RUN=1
+          ./appimagetool-x86_64.AppImage AppDir deepwiki-x86_64.AppImage
+
+      - name: Upload Linux AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepwiki-linux
+          path: deepwiki-x86_64.AppImage
+
+  publish-release:
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-linux]
+    steps:
+      - name: Download Windows binary
+        uses: actions/download-artifact@v4
+        with:
+          name: deepwiki-windows
+          path: ./artifacts/windows
+
+      - name: Download Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: deepwiki-linux
+          path: ./artifacts/linux
+
+      - name: Setup environment for Release
+        run: |
+          # Arrange files
+          mv ./artifacts/windows/deepwiki.exe ./deepwiki-windows-x64.exe
+          mv ./artifacts/linux/deepwiki-x86_64.AppImage ./deepwiki-x86_64.AppImage
+          
+          # Check if this is a tag or a commit push
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "TAG_NAME=${{ github.ref_name }}" >> $GITHUB_ENV
+            echo "RELEASE_NAME=Release ${{ github.ref_name }}" >> $GITHUB_ENV
+            echo "IS_PRERELEASE=false" >> $GITHUB_ENV
+          else
+            echo "TAG_NAME=pre-release" >> $GITHUB_ENV
+            echo "RELEASE_NAME=Latest Pre-release (Development Build)" >> $GITHUB_ENV
+            echo "IS_PRERELEASE=true" >> $GITHUB_ENV
+          fi
+
+      - name: Create or update Github Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          name: ${{ env.RELEASE_NAME }}
+          prerelease: ${{ env.IS_PRERELEASE == 'true' }}
+          draft: false
+          body: |
+            Automatic pre-release builds of DeepWiki.
+            
+            - Built from branch: `${{ github.ref_name }}`
+            - Commit: `${{ github.sha }}`
+            - Built at: ${{ github.event.head_commit.timestamp || 'N/A' }}
+            
+            ### Standalone Executables
+            - **Windows**: [deepwiki-windows-x64.exe](https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/deepwiki-windows-x64.exe)
+            - **Linux (AppImage)**: [deepwiki-x86_64.AppImage](https://github.com/${{ github.repository }}/releases/download/${{ env.TAG_NAME }}/deepwiki-x86_64.AppImage)
+            
+            *No installation is required. Simply download and run the binary for your platform.*
+          files: |
+            deepwiki-windows-x64.exe
+            deepwiki-x86_64.AppImage
+          make_latest: ${{ env.IS_PRERELEASE == 'false' }}

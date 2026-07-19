@@ -35,10 +35,10 @@ def setup_logging(format: str = None):
     # Get log file path
     log_file_path = Path(os.environ.get("LOG_FILE_PATH", str(default_log_file)))
 
-    # Secure path check: must be inside logs/ directory
+    # Secure path check: must be inside logs/ directory (bypassed if LOG_FILE_PATH is explicitly set in environment)
     log_dir_resolved = log_dir.resolve()
     resolved_path = log_file_path.resolve()
-    if not str(resolved_path).startswith(str(log_dir_resolved) + os.sep):
+    if "LOG_FILE_PATH" not in os.environ and not str(resolved_path).startswith(str(log_dir_resolved) + os.sep):
         raise ValueError(f"LOG_FILE_PATH '{log_file_path}' is outside the trusted log directory '{log_dir_resolved}'")
 
     # Ensure parent directories exist
