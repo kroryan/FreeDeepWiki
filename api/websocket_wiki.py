@@ -91,6 +91,17 @@ async def handle_websocket_chat(websocket: WebSocket):
                     logger.warning(f"Request exceeds recommended token limit ({tokens} > 7500)")
                     input_too_large = True
 
+        # Inject custom provider credentials into environment so that fallback embedders
+        # (like OpenAIClient) can successfully initialize when using custom UI settings.
+        if request.api_key:
+            if request.provider in ("openai_custom", "openai", "litellm", "openrouter"):
+                if "OPENAI_API_KEY" not in os.environ:
+                    os.environ["OPENAI_API_KEY"] = request.api_key
+                if request.api_endpoint and "OPENAI_BASE_URL" not in os.environ:
+                    os.environ["OPENAI_BASE_URL"] = request.api_endpoint
+            elif request.provider == "claude" and "ANTHROPIC_API_KEY" not in os.environ:
+                os.environ["ANTHROPIC_API_KEY"] = request.api_key
+
         # Create a new RAG instance for this request
         try:
             request_rag = RAG(provider=request.provider, model=request.model)
