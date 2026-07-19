@@ -34,7 +34,7 @@
 
 ```bash
 # Cloner le dépôt
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Créer un fichier .env avec vos clés API
@@ -346,7 +346,7 @@ Vous pouvez utiliser Docker pour exécuter FreeDeepWiki :
 
 ```bash
 # Récupérer l'image depuis GitHub Container Registry
-docker pull ghcr.io/asyncfuncai/freedeepwiki:latest
+docker pull ghcr.io/kroryan/freedeepwiki:latest
 
 # Exécuter le conteneur avec les variables d'environnement
 docker run -p 8001:8001 -p 3000:3000 \
@@ -359,7 +359,7 @@ docker run -p 8001:8001 -p 3000:3000 \
   -e AZURE_OPENAI_VERSION=votre_version_azure_openai \
 
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 Cette commande monte également `~/.adalflow` de votre hôte vers `/root/.adalflow` dans le conteneur. Ce chemin est utilisé pour stocker :
@@ -396,7 +396,7 @@ echo "OLLAMA_HOST=votre_hôte_ollama" >> .env
 docker run -p 8001:8001 -p 3000:3000 \
   -v $(pwd)/.env:/app/.env \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 Cette commande monte également `~/.adalflow` de votre hôte vers `/root/.adalflow` dans le conteneur. Ce chemin est utilisé pour stocker :
@@ -412,7 +412,7 @@ If you want to build the Docker image locally:
 
 ```bash
 # Clone the repository
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Build the Docker image
@@ -559,6 +559,6 @@ Projet sous licence MIT – Voir le fichier [LICENSE](LICENSE).
 
 ## ⭐ Historique des stars
 
-[![Historique des stars](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)
+[![Historique des stars](https://api.star-history.com/svg?repos=kroryan/freedeepwiki&type=Date)](https://star-history.com/#kroryan/freedeepwiki&Date)
 
 

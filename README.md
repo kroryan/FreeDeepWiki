@@ -39,4 +39,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=kroryan/freedeepwiki&type=Date)](https://star-history.com/#kroryan/freedeepwiki&Date)

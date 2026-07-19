@@ -33,7 +33,7 @@
 
 ```bash
 # Clonar el repositorio
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Crear un archivo .env con tus claves API
@@ -330,5 +330,5 @@ Este proyecto está licenciado bajo la Licencia MIT - consulta el archivo [LICEN
 
 ## ⭐ Historial de Estrellas
 
-[![Gráfico de Historial de Estrellas](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)
+[![Gráfico de Historial de Estrellas](https://api.star-history.com/svg?repos=kroryan/freedeepwiki&type=Date)](https://star-history.com/#kroryan/freedeepwiki&Date)
 

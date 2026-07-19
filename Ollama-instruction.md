@@ -39,7 +39,7 @@ The first command downloads the embedding model that FreeDeepWiki uses to unders
 
 Clone the FreeDeepWiki repository:
 ```bash
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 ```
 

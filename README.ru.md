@@ -33,7 +33,7 @@
 
 ```bash
 # Клонируйте репозиторий
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Создайте файл .env с вашими API-ключами
@@ -333,7 +333,7 @@ FreeDeepWiki может быть запущен в режиме авториза
 #### Запуск контейнера
 
 ```bash
-docker pull ghcr.io/asyncfuncai/freedeepwiki:latest
+docker pull ghcr.io/kroryan/freedeepwiki:latest
 
 docker run -p 8001:8001 -p 3000:3000 \
   -e GOOGLE_API_KEY=... \
@@ -344,7 +344,7 @@ docker run -p 8001:8001 -p 3000:3000 \
   -e AZURE_OPENAI_ENDPOINT=... \
   -e AZURE_OPENAI_VERSION=... \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 Каталог `~/.adalflow` содержит:
@@ -368,13 +368,13 @@ echo "GOOGLE_API_KEY=..." > .env
 docker run -p 8001:8001 -p 3000:3000 \
   -v $(pwd)/.env:/app/.env \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 #### Локальная сборка Docker-образа
 
 ```bash
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 docker build -t freedeepwiki .
@@ -506,4 +506,4 @@ docker build --build-arg CUSTOM_CERT_DIR=certs .
 
 ## ⭐ История звёзд
 
-[![График звёзд](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)
+[![График звёзд](https://api.star-history.com/svg?repos=kroryan/freedeepwiki&type=Date)](https://star-history.com/#kroryan/freedeepwiki&Date)

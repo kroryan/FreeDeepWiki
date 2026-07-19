@@ -33,7 +33,7 @@
 
 ```bash
 # Clone o repositório
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Crie um arquivo .env com suas chaves de API
@@ -326,7 +326,7 @@ Você pode usar Docker para executar o FreeDeepWiki:
 
 ```bash
 # Baixe a imagem do GitHub Container Registry
-docker pull ghcr.io/asyncfuncai/freedeepwiki:latest
+docker pull ghcr.io/kroryan/freedeepwiki:latest
 
 # Execute o container com variáveis de ambiente
 docker run -p 8001:8001 -p 3000:3000 \
@@ -335,7 +335,7 @@ docker run -p 8001:8001 -p 3000:3000 \
   -e OPENROUTER_API_KEY=sua_chave_api_openrouter \
   -e OLLAMA_HOST=seu_host_ollama \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 Este comando também monta `~/.adalflow` no seu host para `/root/.adalflow` no container. Este caminho é usado para armazenar:
@@ -369,7 +369,7 @@ echo "OLLAMA_HOST=seu_host_ollama" >> .env
 docker run -p 8001:8001 -p 3000:3000 \
   -v $(pwd)/.env:/app/.env \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 Este comando também monta `~/.adalflow` no seu host para `/root/.adalflow` no container. Este caminho é usado para armazenar:
@@ -384,7 +384,7 @@ Se você quiser construir a imagem Docker localmente:
 
 ```bash
 # Clone o repositório
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Construa a imagem Docker
@@ -507,4 +507,4 @@ Este projeto está licenciado sob a Licença MIT - veja o arquivo [LICENSE](LICE
 
 ## ⭐ Histórico de Estrelas
 
-[![Gráfico de Histórico de Estrelas](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)
+[![Gráfico de Histórico de Estrelas](https://api.star-history.com/svg?repos=kroryan/freedeepwiki&type=Date)](https://star-history.com/#kroryan/freedeepwiki&Date)

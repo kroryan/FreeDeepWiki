@@ -33,7 +33,7 @@
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # APIキーを含む.envファイルを作成
@@ -211,7 +211,7 @@ Docker を使用して FreeDeepWiki を実行できます：
 
 ```bash
 # GitHub Container Registryからイメージをプル
-docker pull ghcr.io/asyncfuncai/freedeepwiki:latest
+docker pull ghcr.io/kroryan/freedeepwiki:latest
 
 # 環境変数を設定してコンテナを実行
 docker run -p 8001:8001 -p 3000:3000 \
@@ -219,7 +219,7 @@ docker run -p 8001:8001 -p 3000:3000 \
   -e OPENAI_API_KEY=your_openai_api_key \
   -e OPENROUTER_API_KEY=your_openrouter_api_key \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 このコマンドは、ホスト上の ⁠~/.adalflow をコンテナ内の ⁠/root/.adalflow にマウントします。このパスは以下のものを保存するために使用されます：
@@ -252,7 +252,7 @@ echo "OPENROUTER_API_KEY=your_openrouter_api_key" >> .env
 docker run -p 8001:8001 -p 3000:3000 \
   -v $(pwd)/.env:/app/.env \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 このコマンドは、ホスト上の ⁠~/.adalflow をコンテナ内の ⁠/root/.adalflow にマウントします。このパスは以下のものを保存するために使用されます：
@@ -269,7 +269,7 @@ Docker イメージをローカルでビルドしたい場合：
 
 ```bash
 # リポジトリをクローン
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Dockerイメージをビルド
@@ -443,5 +443,5 @@ _FreeDeepWiki の動作を見る！_
 
 ## ⭐ スター履歴
 
-[![スター履歴チャート](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)
+[![スター履歴チャート](https://api.star-history.com/svg?repos=kroryan/freedeepwiki&type=Date)](https://star-history.com/#kroryan/freedeepwiki&Date)
 

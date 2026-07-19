@@ -33,7 +33,7 @@
 
 ```bash
 # 저장소 클론
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # API 키를 포함한 .env 파일 생성
@@ -202,7 +202,7 @@ Docker를 사용하여 FreeDeepWiki를 실행할 수 있습니다:
 
 ```bash
 # GitHub 컨테이너 레지스트리에서 이미지 가져오기
-docker pull ghcr.io/asyncfuncai/freedeepwiki:latest
+docker pull ghcr.io/kroryan/freedeepwiki:latest
 
 # 환경 변수와 함께 컨테이너 실행
 docker run -p 8001:8001 -p 3000:3000 \
@@ -210,7 +210,7 @@ docker run -p 8001:8001 -p 3000:3000 \
   -e OPENAI_API_KEY=your_openai_api_key \
   -e OPENROUTER_API_KEY=your_openrouter_api_key \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 이 명령어는 또한 호스트의 `~/.adalflow`를 컨테이너의 `/root/.adalflow`에 마운트합니다. 이 경로는 다음을 저장하는 데 사용됩니다:
@@ -243,7 +243,7 @@ echo "OPENROUTER_API_KEY=your_openrouter_api_key" >> .env
 docker run -p 8001:8001 -p 3000:3000 \
   -v $(pwd)/.env:/app/.env \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 이 명령어는 또한 호스트의 `~/.adalflow`를 컨테이너의 `/root/.adalflow`에 마운트합니다. 이 경로는 다음을 저장하는 데 사용됩니다:
@@ -259,7 +259,7 @@ docker run -p 8001:8001 -p 3000:3000 \
 
 ```bash
 # 저장소 클론
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Docker 이미지 빌드
@@ -426,5 +426,5 @@ DeepResearch를 사용하려면 질문 제출 전 Ask 인터페이스에서 "Dee
 
 ## ⭐ 스타 히스토리
 
-[![Star History Chart](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=kroryan/freedeepwiki&type=Date)](https://star-history.com/#kroryan/freedeepwiki&Date)
 

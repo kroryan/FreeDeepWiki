@@ -33,7 +33,7 @@
 
 ```bash
 # Clone repository
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Tạo .env file với API keys
@@ -182,7 +182,7 @@ Bạn có thể dùng Docker để run FreeDeepWiki:
 
 ```bash
 # Pull Docker image từ GitHub Container Registry
-docker pull ghcr.io/asyncfuncai/freedeepwiki:latest
+docker pull ghcr.io/kroryan/freedeepwiki:latest
 
 # Chạy container với biến môi trường
 docker run -p 8001:8001 -p 3000:3000 \
@@ -190,7 +190,7 @@ docker run -p 8001:8001 -p 3000:3000 \
   -e OPENAI_API_KEY=your_openai_api_key \
   -e OPENROUTER_API_KEY=your_openrouter_api_key \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 Hoặc đơn giản hơn, sử dụng `docker-compose.yml` :
@@ -214,7 +214,7 @@ echo "OPENROUTER_API_KEY=your_openrouter_api_key" >> .env
 docker run -p 8001:8001 -p 3000:3000 \
   -v $(pwd)/.env:/app/.env \
   -v ~/.adalflow:/root/.adalflow \
-  ghcr.io/asyncfuncai/freedeepwiki:latest
+  ghcr.io/kroryan/freedeepwiki:latest
 ```
 
 #### Bạn có thể Building the Docker image trên máy cục bộ
@@ -222,7 +222,7 @@ docker run -p 8001:8001 -p 3000:3000 \
 
 ```bash
 # Clone repository
-git clone https://github.com/AsyncFuncAI/freedeepwiki.git
+git clone https://github.com/kroryan/freedeepwiki.git
 cd freedeepwiki
 
 # Build Docker image
@@ -419,5 +419,5 @@ Dự án này được cấp phép theo Giấy phép MIT - xem file [LICENSE](LI
 
 ## ⭐ Lịch sử
 
-[![Biểu đồ lịch sử](https://api.star-history.com/svg?repos=AsyncFuncAI/freedeepwiki&type=Date)](https://star-history.com/#AsyncFuncAI/freedeepwiki&Date)
+[![Biểu đồ lịch sử](https://api.star-history.com/svg?repos=kroryan/freedeepwiki&type=Date)](https://star-history.com/#kroryan/freedeepwiki&Date)
 

@@ -171,7 +171,7 @@ url = "http://localhost:8001/chat/completions/stream"
 
 # Request data
 payload = {
-    "repo_url": "https://github.com/AsyncFuncAI/freedeepwiki",
+    "repo_url": "https://github.com/kroryan/freedeepwiki",
     "messages": [
         {
             "role": "user",
