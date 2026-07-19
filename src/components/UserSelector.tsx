@@ -121,7 +121,78 @@ export default function UserSelector({
     };
 
     fetchModelConfig();
-  }, [model, provider, setCustomModel, setIsCustomModel, setModel, setProvider]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider, setModel, setProvider, setIsCustomModel, setCustomModel]); // Removed 'model' to prevent resetting custom model on every keystroke
+
+  // API Key and Endpoint state
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+  const [apiEndpoints, setApiEndpoints] = useState<Record<string, string>>({
+    'openai_custom': 'https://api.openai.com',
+    'ollama': 'http://localhost:11434'
+  });
+  
+  // Load saved keys from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedKeys = localStorage.getItem('deepwiki_api_keys');
+      if (savedKeys) setApiKeys(JSON.parse(savedKeys));
+      const savedEndpoints = localStorage.getItem('deepwiki_api_endpoints');
+      if (savedEndpoints) setApiEndpoints(JSON.parse(savedEndpoints));
+    } catch { console.error('Failed to parse saved api settings'); }
+  }, []);
+
+  const handleKeyChange = (prov: string, val: string) => {
+    const newKeys = { ...apiKeys, [prov]: val };
+    setApiKeys(newKeys);
+    localStorage.setItem('deepwiki_api_keys', JSON.stringify(newKeys));
+  };
+
+  const handleEndpointChange = (prov: string, val: string) => {
+    const newEndpoints = { ...apiEndpoints, [prov]: val };
+    setApiEndpoints(newEndpoints);
+    localStorage.setItem('deepwiki_api_endpoints', JSON.stringify(newEndpoints));
+  };
+
+  const [isProbing, setIsProbing] = useState(false);
+  const handleReloadModels = async () => {
+    setIsProbing(true);
+    try {
+      const endpoint = provider === 'ollama' 
+        ? apiEndpoints['ollama'] || 'http://localhost:11434'
+        : apiEndpoints[provider] || '';
+        
+      const response = await fetch('/api/models/probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          endpoint: endpoint,
+          api_key: apiKeys[provider] || '',
+          provider_type: provider === 'ollama' ? 'ollama' : 'openai'
+        })
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data.models && data.models.length > 0 && modelConfig) {
+            // Update the model list for the current provider
+            const newConfig = { ...modelConfig };
+            const p = newConfig.providers.find(p => p.id === provider);
+            if (p) {
+                p.models = data.models;
+                setModelConfig(newConfig);
+                setModel(data.models[0].id);
+                setError(null);
+            }
+        } else {
+            setError(data.error || 'No models found at the specified endpoint.');
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      setError('Failed to probe models from endpoint.');
+    } finally {
+      setIsProbing(false);
+    }
+  };
 
   // Handler for changing provider
   const handleProviderChange = (newProvider: string) => {
@@ -312,33 +383,104 @@ next.config.js
           </label>
 
           {isCustomModel ? (
-            <input
-              id="custom-model-input"
-              type="text"
-              value={customModel}
-              onChange={(e) => {
-                setCustomModel(e.target.value);
-                setModel(e.target.value);
-              }}
-              placeholder={t.form?.customModelPlaceholder || 'Enter custom model name'}
-              className="input-japanese block w-full px-2.5 py-1.5 text-sm rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
-            />
+            <div className="flex gap-2">
+              <input
+                id="custom-model-input"
+                type="text"
+                value={customModel}
+                onChange={(e) => {
+                  setCustomModel(e.target.value);
+                  setModel(e.target.value);
+                }}
+                placeholder={t.form?.customModelPlaceholder || 'Enter custom model name'}
+                className="input-japanese block w-full px-2.5 py-1.5 text-sm rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+              />
+            </div>
           ) : (
-            <select
-              id="model-dropdown"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="input-japanese block w-full px-2.5 py-1.5 text-sm rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
-              disabled={!provider || isLoading || !modelConfig?.providers.find(p => p.id === provider)?.models?.length}
-            >
-              {modelConfig?.providers.find((p: Provider) => p.id === provider)?.models.map((modelOption) => (
-                <option key={modelOption.id} value={modelOption.id}>
-                  {modelOption.name}
-                </option>
-              )) || <option value="">{t.form?.selectModel || 'Select Model'}</option>}
-            </select>
+            <div className="flex gap-2">
+              <select
+                id="model-dropdown"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="input-japanese block w-full px-2.5 py-1.5 text-sm rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                disabled={!provider || isLoading || !modelConfig?.providers.find(p => p.id === provider)?.models?.length}
+              >
+                {modelConfig?.providers.find((p: Provider) => p.id === provider)?.models.map((modelOption) => (
+                  <option key={modelOption.id} value={modelOption.id}>
+                    {modelOption.name}
+                  </option>
+                )) || <option value="">{t.form?.selectModel || 'Select Model'}</option>}
+              </select>
+              {(provider === 'ollama' || provider === 'openai_custom') && (
+                <button
+                  type="button"
+                  onClick={handleReloadModels}
+                  disabled={isProbing}
+                  className="px-3 py-1.5 text-xs bg-[var(--accent-primary)]/10 text-[var(--accent-primary)] border border-[var(--accent-primary)]/30 rounded hover:bg-[var(--accent-primary)]/20 transition-colors whitespace-nowrap flex items-center justify-center min-w-[80px]"
+                >
+                  {isProbing ? '...' : 'Reload'}
+                </button>
+              )}
+            </div>
           )}
         </div>
+
+        {/* API Key and Endpoint Configuration */}
+        {provider && provider !== 'local' && (
+          <div className="p-3 bg-[var(--background)]/30 border border-[var(--border-color)]/50 rounded-md">
+            <h4 className="text-xs font-semibold text-[var(--foreground)] mb-2 flex justify-between items-center">
+              <span>{t.form?.connectionSettings || 'Connection Settings'}</span>
+              {(provider === 'openai' || provider === 'claude' || provider === 'google') && (
+                <span className="text-[10px] text-[var(--muted)] border border-[var(--border-color)] px-1.5 py-0.5 rounded cursor-help" title="Use your subscription login via CLI or get API Keys from the respective console">
+                  Subscription Login Supported
+                </span>
+              )}
+            </h4>
+            
+            {(provider === 'openai_custom' || provider === 'ollama') && (
+              <div className="mb-3">
+                <label className="block text-[10px] uppercase text-[var(--muted)] mb-1">API Endpoint URL</label>
+                <input 
+                  type="text" 
+                  value={apiEndpoints[provider] || ''}
+                  onChange={(e) => handleEndpointChange(provider, e.target.value)}
+                  placeholder={provider === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com'}
+                  className="input-japanese block w-full px-2 py-1 text-xs rounded bg-black/20 text-[var(--foreground)] focus:border-[var(--accent-primary)] border-transparent"
+                />
+              </div>
+            )}
+
+            <div className="mb-2">
+              <label className="block text-[10px] uppercase text-[var(--muted)] mb-1">
+                API Key {provider === 'ollama' ? '(Optional)' : ''}
+              </label>
+              <input 
+                type="password" 
+                value={apiKeys[provider] || ''}
+                onChange={(e) => handleKeyChange(provider, e.target.value)}
+                placeholder={`Enter ${provider} API Key...`}
+                className="input-japanese block w-full px-2 py-1 text-xs rounded bg-black/20 text-[var(--foreground)] focus:border-[var(--accent-primary)] border-transparent"
+              />
+            </div>
+            
+            {/* Subscription Helper Text */}
+            {provider === 'openai' && (
+              <div className="text-[10px] text-[var(--muted)] leading-tight mt-2 p-2 bg-[var(--accent-primary)]/5 rounded">
+                <strong>ChatGPT Plus/Pro Subscription:</strong> Install the OpenAI Codex CLI <code>npm i -g @openai/codex</code>, run <code>codex login</code> in your terminal, and paste the generated access token above.
+              </div>
+            )}
+            {provider === 'claude' && (
+              <div className="text-[10px] text-[var(--muted)] leading-tight mt-2 p-2 bg-[var(--accent-primary)]/5 rounded">
+                <strong>Claude Pro Subscription:</strong> Install Claude Code CLI <code>npm i -g @anthropic-ai/claude-code</code>, run <code>claude login</code>, and paste your session token above, OR use an API key from the Anthropic Console.
+              </div>
+            )}
+            {provider === 'google' && (
+              <div className="text-[10px] text-[var(--muted)] leading-tight mt-2 p-2 bg-[var(--accent-primary)]/5 rounded">
+                <strong>Gemini Advanced Subscription:</strong> Install Google Antigravity CLI <code>npm i -g @google/agy</code>, run <code>agy auth login</code>, and paste your access token above, OR generate a free API key from Google AI Studio.
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Custom model toggle - only when provider supports it */}
         {modelConfig?.providers.find((p: Provider) => p.id === provider)?.supportsCustomModel && (

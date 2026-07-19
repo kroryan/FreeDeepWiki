@@ -136,10 +136,11 @@ def load_generator_config():
             if provider_config.get("client_class") in CLIENT_CLASSES:
                 provider_config["model_client"] = CLIENT_CLASSES[provider_config["client_class"]]
             # Fall back to default mapping based on provider_id
-            elif provider_id in ["google", "openai", "openrouter", "ollama", "bedrock", "azure", "dashscope", "litellm"]:
+            elif provider_id in ["google", "openai", "openai_custom", "openrouter", "ollama", "bedrock", "azure", "dashscope", "litellm", "claude"]:
                 default_map = {
                     "google": GoogleGenAIClient,
                     "openai": OpenAIClient,
+                    "openai_custom": OpenAIClient,
                     "litellm": LiteLLMClient,
                     "openrouter": OpenRouterClient,
                     "ollama": OllamaClient,
@@ -147,7 +148,8 @@ def load_generator_config():
                     "azure": AzureAIClient,
                     "dashscope": DashscopeClient
                 }
-                provider_config["model_client"] = default_map[provider_id]
+                # Fallback to OpenAIClient for custom/unknown OpenAI-compatible, or LiteLLM for Claude if Anthropic isn't explicitly defined
+                provider_config["model_client"] = default_map.get(provider_id, LiteLLMClient)
             else:
                 logger.warning(f"Unknown provider or client class: {provider_id}")
 

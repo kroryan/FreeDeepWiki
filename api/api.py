@@ -205,6 +205,26 @@ async def get_model_config():
                 )
             )
 
+        # Ensure other standard providers exist if not in config
+        existing_ids = {p.id for p in providers}
+        standard_providers = [
+            ("google", "Google Gemini", ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-pro", "gemini-1.5-flash"]),
+            ("openai", "OpenAI / Codex", ["gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo"]),
+            ("claude", "Anthropic Claude", ["claude-3-7-sonnet-latest", "claude-3-5-sonnet-latest", "claude-3-opus-latest", "claude-3-haiku-20240307"]),
+            ("openai_custom", "Custom OpenAI-compatible", []),
+        ]
+
+        for p_id, p_name, p_models in standard_providers:
+            if p_id not in existing_ids:
+                providers.append(
+                    Provider(
+                        id=p_id,
+                        name=p_name,
+                        supportsCustomModel=True,
+                        models=[Model(id=m, name=m) for m in p_models]
+                    )
+                )
+
         # Create and return the full configuration
         config = ModelConfig(
             providers=providers,
@@ -226,8 +246,52 @@ async def get_model_config():
                     ]
                 )
             ],
-            defaultProvider="google"
         )
+
+class ModelProbeRequest(BaseModel):
+    endpoint: str = Field(..., description="Base URL of the provider endpoint")
+    api_key: Optional[str] = Field(None, description="API key (optional for Ollama)")
+    provider_type: str = Field("openai", description="'openai' or 'ollama'")
+
+@app.post("/models/probe")
+async def probe_models(request: ModelProbeRequest):
+    """
+    Probe an OpenAI-compatible or Ollama endpoint and return its model list.
+    Used by the frontend to populate the model dropdown for custom providers.
+    """
+    import httpx
+
+    endpoint = request.endpoint.rstrip("/")
+    headers = {"Accept": "application/json"}
+    if request.api_key:
+        headers["Authorization"] = f"Bearer {request.api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            if request.provider_type == "ollama":
+                url = f"{endpoint}/api/tags"
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                models = [
+                    {"id": m["name"], "name": m["name"]}
+                    for m in data.get("models", [])
+                ]
+            else:
+                # OpenAI-compatible: GET /v1/models
+                url = f"{endpoint}/v1/models"
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+                models = [
+                    {"id": m["id"], "name": m.get("name", m["id"])}
+                    for m in data.get("data", [])
+                ]
+        return {"models": models}
+    except Exception as e:
+        logger.warning(f"Model probe failed for {endpoint}: {e}")
+        return {"models": [], "error": str(e)}
+
 
 @app.post("/export/wiki")
 async def export_wiki(request: WikiExportRequest):
