@@ -1,4 +1,4 @@
-from typing import Sequence, List
+from typing import Sequence
 from copy import deepcopy
 from tqdm import tqdm
 import logging
@@ -61,45 +61,124 @@ def check_ollama_model_exists(model_name: str, ollama_host: str = None) -> bool:
 
 class OllamaDocumentProcessor(DataComponent):
     """
-    Process documents for Ollama embeddings by processing one document at a time.
-    Adalflow Ollama Client does not support batch embedding, so we need to process each document individually.
+    Process Ollama embeddings through the native batch API.
+
+    AdalFlow's Ollama client uses the legacy single-input endpoint. Current
+    Ollama releases expose /api/embed, which accepts a list of inputs and is
+    substantially faster for large repositories. A failed batch falls back to
+    AdalFlow's single-document path for compatibility with older servers.
     """
-    def __init__(self, embedder: adal.Embedder) -> None:
+    def __init__(
+        self,
+        embedder: adal.Embedder,
+        model_name: str,
+        batch_size: int = 32,
+        ollama_host: str = None,
+        request_timeout: float = None,
+    ) -> None:
         super().__init__()
         self.embedder = embedder
+        self.model_name = model_name
+        self.batch_size = max(1, batch_size)
+        self.ollama_host = (
+            ollama_host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        ).removesuffix("/api").rstrip("/")
+        self.request_timeout = request_timeout or float(
+            os.getenv("OLLAMA_REQUEST_TIMEOUT", "1800")
+        )
 
     def __call__(self, documents: Sequence[Document]) -> Sequence[Document]:
         output = deepcopy(documents)
-        logger.info(f"Processing {len(output)} documents individually for Ollama embeddings")
-
+        logger.info(
+            "Processing %s documents with Ollama batch embeddings (batch size: %s)",
+            len(output),
+            self.batch_size,
+        )
         successful_docs = []
         expected_embedding_size = None
 
-        for i, doc in enumerate(tqdm(output, desc="Processing documents for Ollama embeddings")):
+        for start in tqdm(
+            range(0, len(output), self.batch_size),
+            desc="Processing Ollama embedding batches",
+        ):
+            batch = output[start : start + self.batch_size]
             try:
-                # Get embedding for a single document
-                result = self.embedder(input=doc.text)
-                if result.data and len(result.data) > 0:
-                    embedding = result.data[0].embedding
+                response = requests.post(
+                    f"{self.ollama_host}/api/embed",
+                    json={
+                        "model": self.model_name,
+                        "input": [doc.text for doc in batch],
+                    },
+                    timeout=self.request_timeout,
+                )
+                response.raise_for_status()
+                embeddings = response.json().get("embeddings")
+                if not isinstance(embeddings, list) or len(embeddings) != len(batch):
+                    raise ValueError(
+                        "Ollama returned an unexpected number of embeddings "
+                        f"({len(embeddings) if isinstance(embeddings, list) else 0}"
+                        f" for {len(batch)} inputs)"
+                    )
+            except (requests.RequestException, ValueError) as exc:
+                logger.warning(
+                    "Ollama batch embedding failed at document %s; "
+                    "falling back to individual requests: %s",
+                    start,
+                    exc,
+                )
+                embeddings = []
+                for doc in batch:
+                    try:
+                        result = self.embedder(input=doc.text)
+                        embedding = (
+                            result.data[0].embedding
+                            if result.data and len(result.data) > 0
+                            else None
+                        )
+                    except Exception as fallback_exc:
+                        logger.error(
+                            "Individual Ollama embedding failed for '%s': %s",
+                            getattr(doc, "meta_data", {}).get(
+                                "file_path", f"document_{start + len(embeddings)}"
+                            ),
+                            fallback_exc,
+                        )
+                        embedding = None
+                    embeddings.append(embedding)
 
-                    # Validate embedding size consistency
-                    if expected_embedding_size is None:
-                        expected_embedding_size = len(embedding)
-                        logger.info(f"Expected embedding size set to: {expected_embedding_size}")
-                    elif len(embedding) != expected_embedding_size:
-                        file_path = getattr(doc, 'meta_data', {}).get('file_path', f'document_{i}')
-                        logger.warning(f"Document '{file_path}' has inconsistent embedding size {len(embedding)} != {expected_embedding_size}, skipping")
-                        continue
+            for offset, embedding in enumerate(embeddings):
+                doc_index = start + offset
+                doc = output[doc_index]
+                if not isinstance(embedding, list) or not embedding:
+                    logger.warning(
+                        "No embedding returned for '%s'; skipping",
+                        getattr(doc, "meta_data", {}).get(
+                            "file_path", f"document_{doc_index}"
+                        ),
+                    )
+                    continue
+                if expected_embedding_size is None:
+                    expected_embedding_size = len(embedding)
+                    logger.info(
+                        "Expected Ollama embedding size set to: %s",
+                        expected_embedding_size,
+                    )
+                elif len(embedding) != expected_embedding_size:
+                    logger.warning(
+                        "Embedding size mismatch for '%s': %s != %s; skipping",
+                        getattr(doc, "meta_data", {}).get(
+                            "file_path", f"document_{doc_index}"
+                        ),
+                        len(embedding),
+                        expected_embedding_size,
+                    )
+                    continue
+                doc.vector = embedding
+                successful_docs.append(doc)
 
-                    # Assign the embedding to the document
-                    output[i].vector = embedding
-                    successful_docs.append(output[i])
-                else:
-                    file_path = getattr(doc, 'meta_data', {}).get('file_path', f'document_{i}')
-                    logger.warning(f"Failed to get embedding for document '{file_path}', skipping")
-            except Exception as e:
-                file_path = getattr(doc, 'meta_data', {}).get('file_path', f'document_{i}')
-                logger.error(f"Error processing document '{file_path}': {e}, skipping")
-
-        logger.info(f"Successfully processed {len(successful_docs)}/{len(output)} documents with consistent embeddings")
+        logger.info(
+            "Successfully processed %s/%s documents with Ollama embeddings",
+            len(successful_docs),
+            len(output),
+        )
         return successful_docs

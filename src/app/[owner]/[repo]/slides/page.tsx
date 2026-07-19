@@ -8,6 +8,7 @@ import ThemeToggle from '@/components/theme-toggle';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
 import getRepoUrl from '@/utils/getRepoUrl';
+import { WEBSOCKET_CONNECT_TIMEOUT_MS } from '@/utils/timeouts';
 
 // Helper function to add tokens and other parameters to request body
 const addTokensToRequestBody = (
@@ -276,20 +277,21 @@ Give me the numbered list with brief descriptions for each slide. Be creative bu
         await new Promise<void>((resolve, reject) => {
           let isResolved = false;
 
-          // If the connection doesn't open or complete within 10 seconds, fall back to HTTP
+          // Limit only the connection handshake, never model inference.
           const timeout = setTimeout(() => {
             if (!isResolved) {
               isResolved = true;
-              // Try to close the WebSocket if it's still open
-              if (ws.readyState === WebSocket.OPEN) {
-                ws.close();
-              }
               reject(new Error('WebSocket connection timeout'));
             }
-          }, 10000);
+          }, WEBSOCKET_CONNECT_TIMEOUT_MS);
 
           // Set up event handlers
           ws.onopen = () => {
+            clearTimeout(timeout);
+            if (isResolved) {
+              ws.close();
+              return;
+            }
             console.log('WebSocket connection established for slide plan');
             // Send the request as JSON
             ws.send(JSON.stringify(planRequestBody));
@@ -552,20 +554,21 @@ Please return ONLY the HTML with no markdown formatting or code blocks. Just the
           await new Promise<void>((resolve, reject) => {
             let isResolved = false;
 
-            // If the connection doesn't open or complete within 10 seconds, fall back to HTTP
+            // Limit only the connection handshake, never model inference.
             const timeout = setTimeout(() => {
               if (!isResolved) {
                 isResolved = true;
-                // Try to close the WebSocket if it's still open
-                if (ws.readyState === WebSocket.OPEN) {
-                  ws.close();
-                }
                 reject(new Error('WebSocket connection timeout'));
               }
-            }, 10000);
+            }, WEBSOCKET_CONNECT_TIMEOUT_MS);
 
             // Set up event handlers
             ws.onopen = () => {
+              clearTimeout(timeout);
+              if (isResolved) {
+                ws.close();
+                return;
+              }
               console.log(`WebSocket connection established for slide ${slideCounter}`);
               // Send the request as JSON
               ws.send(JSON.stringify(slideRequestBody));

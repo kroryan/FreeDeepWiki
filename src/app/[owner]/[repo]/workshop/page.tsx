@@ -9,6 +9,7 @@ import Markdown from '@/components/Markdown';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
 import getRepoUrl from '@/utils/getRepoUrl';
+import { WEBSOCKET_CONNECT_TIMEOUT_MS } from '@/utils/timeouts';
 
 // Helper function to add tokens and other parameters to request body
 const addTokensToRequestBody = (
@@ -326,27 +327,27 @@ Make the workshop content in ${language === 'en' ? 'English' :
 
         // Create a promise that resolves when the WebSocket connection is complete
         await new Promise<void>((resolve, reject) => {
-          // Set up event handlers
-          ws.onopen = () => {
-            console.log('WebSocket connection established for workshop generation');
-            // Send the request as JSON
-            ws.send(JSON.stringify(requestBody));
-            resolve();
-          };
+          let connectionAborted = false;
 
           ws.onerror = (error) => {
+            connectionAborted = true;
             console.error('WebSocket error:', error);
             reject(new Error('WebSocket connection failed'));
           };
 
-          // If the connection doesn't open within 5 seconds, fall back to HTTP
+          // Limit only the connection handshake, never model inference.
           const timeout = setTimeout(() => {
+            connectionAborted = true;
             reject(new Error('WebSocket connection timeout'));
-          }, 5000);
+          }, WEBSOCKET_CONNECT_TIMEOUT_MS);
 
           // Clear the timeout if the connection opens successfully
           ws.onopen = () => {
             clearTimeout(timeout);
+            if (connectionAborted) {
+              ws.close();
+              return;
+            }
             console.log('WebSocket connection established for workshop generation');
             // Send the request as JSON
             ws.send(JSON.stringify(requestBody));

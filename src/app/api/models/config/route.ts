@@ -25,7 +25,11 @@ export async function GET() {
 
     // Forward the response from the backend
     const modelConfig = await backendResponse.json();
-    return NextResponse.json(modelConfig);
+    return NextResponse.json(modelConfig, {
+      headers: {
+        'Cache-Control': 'no-store, max-age=0',
+      },
+    });
   } catch (error) {
     console.error('Error fetching model configurations:', error);    
     return new NextResponse(JSON.stringify({ error: error }), {

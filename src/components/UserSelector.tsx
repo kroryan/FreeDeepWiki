@@ -86,7 +86,7 @@ export default function UserSelector({
         setIsLoading(true);
         setError(null);
 
-        const response = await fetch('/api/models/config');
+        const response = await fetch('/api/models/config', { cache: 'no-store' });
 
         if (!response.ok) {
           throw new Error(`Error fetching model configurations: ${response.status}`);
@@ -95,13 +95,20 @@ export default function UserSelector({
         const data = await response.json();
         setModelConfig(data);
 
-        // Initialize provider and model with defaults from API if not already set
-        if (!provider && data.defaultProvider) {
-          setProvider(data.defaultProvider);
-
-          // Find the default provider and set its default model
-          const selectedProvider = data.providers.find((p: Provider) => p.id === data.defaultProvider);
-          if (selectedProvider && selectedProvider.models.length > 0) {
+        // Initialize defaults and discard stale cached models that are not
+        // published by the currently configured Ollama endpoint.
+        const activeProvider = provider || data.defaultProvider;
+        if (!provider && activeProvider) {
+          setProvider(activeProvider);
+        }
+        const selectedProvider = data.providers.find((p: Provider) => p.id === activeProvider);
+        if (selectedProvider && selectedProvider.models.length > 0) {
+          const modelStillAvailable = selectedProvider.models.some(
+            (availableModel: Model) => availableModel.id === model
+          );
+          if (!modelStillAvailable) {
+            setIsCustomModel(false);
+            setCustomModel('');
             setModel(selectedProvider.models[0].id);
           }
         }
@@ -114,7 +121,7 @@ export default function UserSelector({
     };
 
     fetchModelConfig();
-  }, [provider, setModel, setProvider]);
+  }, [model, provider, setCustomModel, setIsCustomModel, setModel, setProvider]);
 
   // Handler for changing provider
   const handleProviderChange = (newProvider: string) => {
@@ -290,7 +297,9 @@ next.config.js
             <option value="" disabled>{t.form?.selectProvider || 'Select Provider'}</option>
             {modelConfig?.providers.map((providerOption) => (
               <option key={providerOption.id} value={providerOption.id}>
-                {t.form?.[`provider${providerOption.id.charAt(0).toUpperCase() + providerOption.id.slice(1)}`] || providerOption.name}
+                {providerOption.id === 'ollama'
+                  ? 'Ollama'
+                  : t.form?.[`provider${providerOption.id.charAt(0).toUpperCase() + providerOption.id.slice(1)}`] || providerOption.name}
               </option>
             ))}
           </select>

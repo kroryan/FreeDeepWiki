@@ -14,8 +14,11 @@ if [[ -f "${LOCAL_ENV}" ]]; then
 fi
 
 OLLAMA_ENDPOINT="${OLLAMA_ENDPOINT:-http://127.0.0.1:11434}"
-OLLAMA_MODEL="${OLLAMA_MODEL:-gpt-oss:120b-cloud}"
-OLLAMA_EMBED_MODEL="${OLLAMA_EMBED_MODEL:-nomic-embed-text}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-}"
+OLLAMA_EMBED_MODEL="${OLLAMA_EMBED_MODEL:-}"
+OLLAMA_EMBED_BATCH_SIZE="${OLLAMA_EMBED_BATCH_SIZE:-32}"
+OLLAMA_REQUEST_TIMEOUT="${OLLAMA_REQUEST_TIMEOUT:-1800}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
 DEEPWIKI_API_PORT="${DEEPWIKI_API_PORT:-8001}"
 DEEPWIKI_PROJECT_NAME="${DEEPWIKI_PROJECT_NAME:-deepwiki-open-local}"
 DEEPWIKI_NETWORK_MODE="${DEEPWIKI_NETWORK_MODE:-auto}"
@@ -32,7 +35,7 @@ Uso:
   ./deepwiki.sh <comando> [opciones]
 
 Comandos:
-  setup          Comprueba Ollama/modelos y construye la imagen
+  setup          Comprueba Ollama y construye la imagen
   up             Prepara la configuración y arranca DeepWiki
   down           Para y elimina solo los contenedores de DeepWiki
   restart        Recrea DeepWiki con la configuración actual
@@ -50,9 +53,15 @@ Opciones:
   -ollama-endpoint, --ollama-endpoint URL
                   Endpoint de Ollama (por defecto http://127.0.0.1:11434)
   -ollama-model, --ollama-model, --model MODELO
-                  Modelo generador (por defecto gpt-oss:120b-cloud)
+                  Opcional: fija el modelo predeterminado entre los descubiertos
   --embed-model MODELO
-                  Modelo de embeddings (por defecto nomic-embed-text)
+                  Opcional: fija el embedder entre los descubiertos
+  --embed-batch-size N
+                  Textos por petición de embeddings (por defecto 32)
+  --ollama-timeout SEGUNDOS
+                  Timeout por tanda de embeddings (por defecto 1800)
+  --github-token-file RUTA
+                  Lee un token GitHub desde un archivo (evita el historial)
   --api-port PORT Puerto de la API (por defecto 8001)
   --network MODO  auto, host o bridge (por defecto auto)
   --no-build      No reconstruir la imagen al ejecutar up/restart
@@ -60,13 +69,14 @@ Opciones:
 
 Variables equivalentes:
   OLLAMA_ENDPOINT, OLLAMA_MODEL, OLLAMA_EMBED_MODEL,
+  OLLAMA_EMBED_BATCH_SIZE, OLLAMA_REQUEST_TIMEOUT, GITHUB_TOKEN,
   DEEPWIKI_API_PORT, DEEPWIKI_PROJECT_NAME, DEEPWIKI_NETWORK_MODE
 
 Ejemplos:
   ./deepwiki.sh setup
   ./deepwiki.sh up
   ./deepwiki.sh up --no-build
-  ./deepwiki.sh up -ollama-endpoint http://192.168.1.20:11434
+  ./deepwiki.sh up --ollama-endpoint http://100.94.16.58:11434
   ./deepwiki.sh logs -f
 
 Los valores persistentes pueden guardarse en deepwiki.env tomando como base
@@ -144,6 +154,9 @@ compose() {
   OLLAMA_CONTAINER_ENDPOINT="${OLLAMA_CONTAINER_ENDPOINT}" \
   OLLAMA_MODEL="${OLLAMA_MODEL}" \
   OLLAMA_EMBED_MODEL="${OLLAMA_EMBED_MODEL}" \
+  OLLAMA_EMBED_BATCH_SIZE="${OLLAMA_EMBED_BATCH_SIZE}" \
+  OLLAMA_REQUEST_TIMEOUT="${OLLAMA_REQUEST_TIMEOUT}" \
+  GITHUB_TOKEN="${GITHUB_TOKEN}" \
     docker compose "${compose_files[@]}" "$@"
 }
 
@@ -165,7 +178,10 @@ model_exists() {
 
 pull_models() {
   check_ollama
+  [[ -n "${OLLAMA_EMBED_MODEL}" || -n "${OLLAMA_MODEL}" ]] ||
+    die "Indica --ollama-model y/o --embed-model para descargar modelos"
   for model in "${OLLAMA_EMBED_MODEL}" "${OLLAMA_MODEL}"; do
+    [[ -n "${model}" ]] || continue
     if model_exists "${model}"; then
       info "Modelo disponible: ${model}"
     else
@@ -186,13 +202,20 @@ check_dependencies() {
 }
 
 show_config() {
+  local selected_model="${OLLAMA_MODEL:-automático desde Ollama}"
+  local selected_embed_model="${OLLAMA_EMBED_MODEL:-automático desde Ollama}"
+  local github_auth="no configurado"
+  [[ -n "${GITHUB_TOKEN}" ]] && github_auth="configurado"
   cat <<EOF
 Proyecto Compose : ${DEEPWIKI_PROJECT_NAME}
 Web              : http://localhost:3000
 API              : http://localhost:${DEEPWIKI_API_PORT}
 Ollama           : ${OLLAMA_ENDPOINT}
-Modelo           : ${OLLAMA_MODEL}
-Embeddings       : ${OLLAMA_EMBED_MODEL}
+Modelo           : ${selected_model}
+Embeddings       : ${selected_embed_model}
+Tanda embeddings : ${OLLAMA_EMBED_BATCH_SIZE}
+Timeout Ollama   : ${OLLAMA_REQUEST_TIMEOUT}s (solo embeddings)
+Token GitHub      : ${github_auth}
 Red Docker        : ${EFFECTIVE_NETWORK_MODE}
 Config local     : ${RUNTIME_DIR}/config
 Autoarranque     : no
@@ -227,7 +250,7 @@ doctor() {
   local failed=0
   show_config
   printf '\n'
-  for command in docker curl ollama; do
+  for command in docker curl; do
     if command -v "${command}" >/dev/null 2>&1; then
       printf 'OK    comando %s\n' "${command}"
     else
@@ -250,17 +273,17 @@ doctor() {
     printf 'ERROR Ollama no accesible\n'
     failed=1
   fi
-  if model_exists "${OLLAMA_MODEL}"; then
-    printf 'OK    modelo %s\n' "${OLLAMA_MODEL}"
+  if curl --fail --silent --max-time 5 \
+    "${OLLAMA_ENDPOINT}/api/tags" >/dev/null; then
+    printf 'OK    catálogo de modelos accesible\n'
   else
-    printf 'ERROR falta modelo %s\n' "${OLLAMA_MODEL}"
+    printf 'ERROR catálogo de modelos no accesible\n'
     failed=1
   fi
-  if model_exists "${OLLAMA_EMBED_MODEL}"; then
-    printf 'OK    modelo %s\n' "${OLLAMA_EMBED_MODEL}"
+  if [[ -n "${GITHUB_TOKEN}" ]]; then
+    printf 'OK    token GitHub configurado\n'
   else
-    printf 'ERROR falta modelo %s\n' "${OLLAMA_EMBED_MODEL}"
-    failed=1
+    printf 'AVISO token GitHub no configurado (límite anónimo)\n'
   fi
   return "${failed}"
 }
@@ -289,6 +312,23 @@ while (($#)); do
     --embed-model)
       (($# >= 2)) || die "Falta el modelo de embeddings"
       OLLAMA_EMBED_MODEL="$2"
+      shift 2
+      ;;
+    --embed-batch-size)
+      (($# >= 2)) || die "Falta el tamaño de tanda"
+      OLLAMA_EMBED_BATCH_SIZE="$2"
+      shift 2
+      ;;
+    --ollama-timeout)
+      (($# >= 2)) || die "Falta el timeout de Ollama"
+      OLLAMA_REQUEST_TIMEOUT="$2"
+      shift 2
+      ;;
+    --github-token-file)
+      (($# >= 2)) || die "Falta la ruta del archivo de token"
+      [[ -r "$2" ]] || die "No se puede leer el archivo de token: $2"
+      IFS= read -r GITHUB_TOKEN < "$2"
+      [[ -n "${GITHUB_TOKEN}" ]] || die "El archivo de token está vacío"
       shift 2
       ;;
     --api-port)
@@ -321,12 +361,16 @@ done
 }
 normalize_endpoint
 validate_port
+[[ "${OLLAMA_EMBED_BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] ||
+  die "El tamaño de tanda debe ser un entero positivo"
+[[ "${OLLAMA_REQUEST_TIMEOUT}" =~ ^[1-9][0-9]*$ ]] ||
+  die "El timeout de Ollama debe ser un entero positivo"
 cd "${ROOT_DIR}"
 
 case "${COMMAND}" in
   setup)
     check_dependencies
-    pull_models
+    check_ollama
     mkdir -p "${RUNTIME_DIR}"
     info "Construyendo DeepWiki"
     compose build
@@ -336,7 +380,6 @@ case "${COMMAND}" in
   up)
     check_dependencies
     check_ollama
-    pull_models
     mkdir -p "${RUNTIME_DIR}"
     info "Arrancando DeepWiki"
     if [[ "${BUILD}" == true ]]; then
@@ -355,7 +398,6 @@ case "${COMMAND}" in
   restart)
     check_dependencies
     check_ollama
-    pull_models
     mkdir -p "${RUNTIME_DIR}"
     compose down
     if [[ "${BUILD}" == true ]]; then
@@ -412,7 +454,8 @@ case "${COMMAND}" in
       deepwiki-open:ollama \
       python -m pytest -q \
         test/test_deepwiki_config.py \
-        test/test_extract_repo_name.py
+        test/test_extract_repo_name.py \
+        test/test_ollama_batch.py
     info "Pruebas reproducibles superadas"
     ;;
   config)

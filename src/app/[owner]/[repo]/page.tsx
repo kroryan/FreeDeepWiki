@@ -9,6 +9,7 @@ import WikiTreeView from '@/components/WikiTreeView';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
 import getRepoUrl from '@/utils/getRepoUrl';
+import { WEBSOCKET_CONNECT_TIMEOUT_MS } from '@/utils/timeouts';
 import { extractUrlDomain, extractUrlPath } from '@/utils/urlDecoder';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
@@ -239,6 +240,7 @@ export default function RepoWikiPage() {
   const [currentToken, setCurrentToken] = useState(token); // Track current effective token
   const [effectiveRepoInfo, setEffectiveRepoInfo] = useState(repoInfo); // Track effective repo info with cached data
   const [embeddingError, setEmbeddingError] = useState(false);
+  const [connectionError, setConnectionError] = useState(false);
 
   // Model selection state variables
   const [selectedProviderState, setSelectedProviderState] = useState(providerParam);
@@ -553,27 +555,27 @@ Remember:
 
           // Create a promise that resolves when the WebSocket connection is complete
           await new Promise<void>((resolve, reject) => {
-            // Set up event handlers
-            ws.onopen = () => {
-              console.log(`WebSocket connection established for page: ${page.title}`);
-              // Send the request as JSON
-              ws.send(JSON.stringify(requestBody));
-              resolve();
-            };
+            let connectionAborted = false;
 
             ws.onerror = (error) => {
+              connectionAborted = true;
               console.error('WebSocket error:', error);
               reject(new Error('WebSocket connection failed'));
             };
 
-            // If the connection doesn't open within 5 seconds, fall back to HTTP
+            // Limit only the connection handshake, never model inference.
             const timeout = setTimeout(() => {
+              connectionAborted = true;
               reject(new Error('WebSocket connection timeout'));
-            }, 5000);
+            }, WEBSOCKET_CONNECT_TIMEOUT_MS);
 
             // Clear the timeout if the connection opens successfully
             ws.onopen = () => {
               clearTimeout(timeout);
+              if (connectionAborted) {
+                ws.close();
+                return;
+              }
               console.log(`WebSocket connection established for page: ${page.title}`);
               // Send the request as JSON
               ws.send(JSON.stringify(requestBody));
@@ -850,27 +852,27 @@ IMPORTANT:
 
         // Create a promise that resolves when the WebSocket connection is complete
         await new Promise<void>((resolve, reject) => {
-          // Set up event handlers
-          ws.onopen = () => {
-            console.log('WebSocket connection established for wiki structure');
-            // Send the request as JSON
-            ws.send(JSON.stringify(requestBody));
-            resolve();
-          };
+          let connectionAborted = false;
 
           ws.onerror = (error) => {
+            connectionAborted = true;
             console.error('WebSocket error:', error);
             reject(new Error('WebSocket connection failed'));
           };
 
-          // If the connection doesn't open within 5 seconds, fall back to HTTP
+          // Limit only the connection handshake, never model inference.
           const timeout = setTimeout(() => {
+            connectionAborted = true;
             reject(new Error('WebSocket connection timeout'));
-          }, 5000);
+          }, WEBSOCKET_CONNECT_TIMEOUT_MS);
 
           // Clear the timeout if the connection opens successfully
           ws.onopen = () => {
             clearTimeout(timeout);
+            if (connectionAborted) {
+              ws.close();
+              return;
+            }
             console.log('WebSocket connection established for wiki structure');
             // Send the request as JSON
             ws.send(JSON.stringify(requestBody));
@@ -1155,8 +1157,19 @@ IMPORTANT:
 
     } catch (error) {
       console.error('Error determining wiki structure:', error);
+      const message = error instanceof Error ? error.message : 'An unknown error occurred';
+      const disconnected =
+        error instanceof TypeError ||
+        /NetworkError|Failed to fetch|fetch resource|WebSocket|connection (?:closed|refused|reset)/i.test(message);
       setIsLoading(false);
-      setError(error instanceof Error ? error.message : 'An unknown error occurred');
+      setConnectionError(disconnected);
+      setError(
+        disconnected
+          ? language === 'es'
+            ? 'Se interrumpió la conexión con el backend de DeepWiki. El repositorio es válido; vuelve a intentar la generación.'
+            : 'The connection to the DeepWiki backend was interrupted. The repository is valid; retry the generation.'
+          : message
+      );
       setLoadingMessage(undefined);
     } finally {
       setStructureRequestInProgress(false);
@@ -1178,6 +1191,7 @@ IMPORTANT:
     setPagesInProgress(new Set());
     setError(null);
     setEmbeddingError(false); // Reset embedding error state
+    setConnectionError(false);
 
     try {
       // Set the request in progress flag
@@ -1212,11 +1226,14 @@ IMPORTANT:
         // Try to get the tree data for common branch names
         let treeData = null;
         let apiErrorDetails = '';
+        let gitFallbackReadme = '';
+        let gitFallbackAttempted = false;
+        let githubNetworkError = false;
 
         // Determine the GitHub API base URL based on the repository URL
         const getGithubApiUrl = (repoUrl: string | null): string => {
           if (!repoUrl) {
-            return 'https://api.github.com'; // Default to public GitHub
+            return '/api/github'; // Server-side proxy can authenticate safely
           }
           
           try {
@@ -1225,14 +1242,14 @@ IMPORTANT:
             
             // If it's the public GitHub, use the standard API URL
             if (hostname === 'github.com') {
-              return 'https://api.github.com';
+              return '/api/github';
             }
             
             // For GitHub Enterprise, use the enterprise API URL format
             // GitHub Enterprise API URL format: https://github.company.com/api/v3
             return `${url.protocol}//${hostname}/api/v3`;
           } catch {
-            return 'https://api.github.com'; // Fallback to public GitHub if URL parsing fails
+            return '/api/github'; // Fallback to public GitHub proxy
           }
         };
 
@@ -1277,9 +1294,30 @@ IMPORTANT:
             } else {
               const errorData = await response.text();
               apiErrorDetails = `Status: ${response.status}, Response: ${errorData}`;
+
+              if (response.status === 403 && !gitFallbackAttempted) {
+                gitFallbackAttempted = true;
+                console.log('GitHub REST limit reached; trying public Git fallback');
+                const fallbackResponse = await fetch(
+                  `/api/github/repository-structure?owner=${encodeURIComponent(owner)}&repo=${encodeURIComponent(repo)}`,
+                  { cache: 'no-store' }
+                );
+                if (fallbackResponse.ok) {
+                  const fallbackData = await fallbackResponse.json();
+                  treeData = { tree: fallbackData.tree };
+                  gitFallbackReadme = fallbackData.readme || '';
+                  defaultBranchLocal = fallbackData.default_branch || 'main';
+                  setDefaultBranch(defaultBranchLocal || 'main');
+                  console.log('Successfully fetched repository structure through Git fallback');
+                  break;
+                }
+                const fallbackError = await fallbackResponse.text();
+                apiErrorDetails += `; Git fallback: ${fallbackError}`;
+              }
               console.error(`Error fetching repository structure: ${apiErrorDetails}`);
             }
           } catch (err) {
+            githubNetworkError = true;
             console.error(`Network error fetching branch ${branch}:`, err);
           }
         }
@@ -1287,6 +1325,8 @@ IMPORTANT:
         if (!treeData || !treeData.tree) {
           if (apiErrorDetails) {
             throw new Error(`Could not fetch repository structure. API Error: ${apiErrorDetails}`);
+          } else if (githubNetworkError) {
+            throw new TypeError('NetworkError while contacting the DeepWiki GitHub proxy');
           } else {
             throw new Error('Could not fetch repository structure. Repository might not exist, be empty or private.');
           }
@@ -1298,19 +1338,25 @@ IMPORTANT:
           .map((item: { type: string; path: string }) => item.path)
           .join('\n');
 
-        // Try to fetch README.md content
+        readmeContent = gitFallbackReadme;
+
+        // Try to fetch README.md content when the Git fallback did not.
         try {
-          const headers = createGithubHeaders(currentToken);
-
-          const readmeResponse = await fetch(`${githubApiBaseUrl}/repos/${owner}/${repo}/readme`, {
-            headers
-          });
-
-          if (readmeResponse.ok) {
-            const readmeData = await readmeResponse.json();
-            readmeContent = atob(readmeData.content);
+          if (readmeContent) {
+            console.log('Using README from Git fallback');
           } else {
-            console.warn(`Could not fetch README.md, status: ${readmeResponse.status}`);
+            const headers = createGithubHeaders(currentToken);
+
+            const readmeResponse = await fetch(`${githubApiBaseUrl}/repos/${owner}/${repo}/readme`, {
+              headers
+            });
+
+            if (readmeResponse.ok) {
+              const readmeData = await readmeResponse.json();
+              readmeContent = atob(readmeData.content);
+            } else {
+              console.warn(`Could not fetch README.md, status: ${readmeResponse.status}`);
+            }
           }
         } catch (err) {
           console.warn('Could not fetch README.md, continuing with empty README', err);
@@ -1485,8 +1531,19 @@ IMPORTANT:
 
     } catch (error) {
       console.error('Error fetching repository structure:', error);
+      const message = error instanceof Error ? error.message : 'An unknown error occurred';
+      const disconnected =
+        error instanceof TypeError ||
+        /NetworkError|Failed to fetch|fetch resource|connection (?:closed|refused|reset)/i.test(message);
       setIsLoading(false);
-      setError(error instanceof Error ? error.message : 'An unknown error occurred');
+      setConnectionError(disconnected);
+      setError(
+        disconnected
+          ? language === 'es'
+            ? 'No se pudo contactar con el backend de DeepWiki. El repositorio no es el problema; comprueba que el servicio siga activo y vuelve a intentarlo.'
+            : 'Could not contact the DeepWiki backend. The repository is not the problem; check that the service is running and retry.'
+          : message
+      );
       setLoadingMessage(undefined);
     } finally {
       // Reset the request in progress flag
@@ -2023,7 +2080,11 @@ IMPORTANT:
             </div>
             <p className="text-[var(--foreground)] text-sm mb-3">{error}</p>
             <p className="text-[var(--muted)] text-xs">
-              {embeddingError ? (
+              {connectionError ? (
+                language === 'es'
+                  ? 'La conexión con el servicio se interrumpió durante el análisis. Puedes volver a intentarlo sin cambiar la URL del repositorio.'
+                  : 'The service connection was interrupted during analysis. You can retry without changing the repository URL.'
+              ) : embeddingError ? (
                 messages.repoPage?.embeddingErrorDefault || 'This error is related to the document embedding system used for analyzing your repository. Please verify your embedding model configuration, API keys, and try again. If the issue persists, consider switching to a different embedding provider in the model settings.'
               ) : (
                 messages.repoPage?.errorMessageDefault || 'Please check that your repository exists and is public. Valid formats are "owner/repo", "https://github.com/owner/repo", "https://gitlab.com/owner/repo", "https://bitbucket.org/owner/repo", or local folder paths like "C:\\path\\to\\folder" or "/path/to/folder".'

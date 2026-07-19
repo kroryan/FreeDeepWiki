@@ -24,11 +24,10 @@ bridge y `host.docker.internal`. Puede forzarse con `--network host` o
 ```
 
 La interfaz queda en <http://localhost:3000> y la API en
-<http://localhost:8001>. El proveedor predeterminado es Ollama, con
-`gpt-oss:120b-cloud` para generación y `nomic-embed-text` para embeddings.
-El modelo `gpt-oss:120b-cloud` necesita conexión a Internet e inicio de sesión
-en Ollama. Para un equipo totalmente offline, seleccione un modelo descargado
-localmente con `--ollama-model`.
+<http://localhost:8001>. El proveedor predeterminado es Ollama. En cada
+arranque, DeepWiki consulta `/api/tags` y muestra los modelos de generación
+publicados por ese endpoint. Los modelos con capacidad `embedding` se usan
+separadamente y no aparecen mezclados en el selector.
 
 ## Uso diario
 
@@ -41,21 +40,61 @@ localmente con `--ollama-model`.
 ./deepwiki.sh down
 ```
 
-Para seleccionar otro modelo y recrear el servicio:
+Para usar otro servidor Ollama y leer automáticamente su catálogo:
 
 ```bash
-./deepwiki.sh up --no-build --ollama-model qwen3.5:4b
+./deepwiki.sh up --no-build \
+  --ollama-endpoint http://100.94.16.58:11434
 ```
 
-Para otro servidor Ollama:
+`--ollama-model` sigue disponible opcionalmente para elegir cuál de los
+modelos descubiertos aparecerá como predeterminado:
 
 ```bash
-./deepwiki.sh up --ollama-endpoint http://192.168.1.20:11434
+./deepwiki.sh up --no-build \
+  --ollama-endpoint http://100.94.16.58:11434 \
+  --ollama-model ornith:35b
+```
+
+Los modelos remotos lentos no tienen un timeout de generación. Los embeddings
+se envían por lotes de 32 y cada lote admite hasta 1800 segundos. Ambos valores
+pueden ajustarse para servidores con poca RAM o enlaces muy lentos:
+
+```bash
+./deepwiki.sh up --no-build \
+  --ollama-endpoint http://100.94.16.58:11434 \
+  --embed-batch-size 16 \
+  --ollama-timeout 3600
 ```
 
 Las opciones persistentes pueden guardarse copiando
 `deepwiki.env.example` a `deepwiki.env`. Este último y el runtime `.deepwiki/`
 están ignorados por Git.
+
+## Límite de GitHub
+
+Las consultas anónimas de GitHub tienen un límite bajo. Para repositorios
+públicos, DeepWiki cambia automáticamente a un clon Git superficial cuando se
+agota esa cuota, por lo que no es obligatorio configurar un token.
+
+Para repositorios privados, o para evitar incluso ese fallback, cree un token
+de GitHub de solo lectura, copie el ejemplo y guárdelo en `deepwiki.env`:
+
+```bash
+cp deepwiki.env.example deepwiki.env
+# Edite deepwiki.env y establezca:
+GITHUB_TOKEN=github_pat_...
+chmod 600 deepwiki.env
+./deepwiki.sh up --no-build
+```
+
+El token se utiliza únicamente en el servidor mediante `/api/github`; no se
+incluye en el JavaScript enviado al navegador. También puede indicarse mediante
+un archivo:
+
+```bash
+./deepwiki.sh up --github-token-file /ruta/segura/github.token
+```
 
 El contenedor tiene `restart: "no"`: solo arranca al ejecutar `up`, nunca por
 reiniciar el equipo o el daemon de Docker. `down` no detiene Ollama.
