@@ -137,6 +137,27 @@ const addTokensToRequestBody = (
     requestBody.included_files = includedFiles;
   }
 
+  // Inject API Keys and Endpoints from localStorage if available
+  try {
+    if (typeof window !== 'undefined') {
+      const savedKeys = localStorage.getItem('deepwiki_api_keys');
+      if (savedKeys) {
+        const parsedKeys = JSON.parse(savedKeys);
+        if (parsedKeys[provider]) {
+          requestBody.api_key = parsedKeys[provider];
+        }
+      }
+      const savedEndpoints = localStorage.getItem('deepwiki_api_endpoints');
+      if (savedEndpoints) {
+        const parsedEndpoints = JSON.parse(savedEndpoints);
+        if (parsedEndpoints[provider]) {
+          requestBody.api_endpoint = parsedEndpoints[provider];
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse saved api settings in addTokensToRequestBody', e);
+  }
 };
 
 const createGithubHeaders = (githubToken: string): HeadersInit => {

@@ -154,6 +154,13 @@ export default function UserSelector({
   };
 
   const [isProbing, setIsProbing] = useState(false);
+  const [isSaved, setIsSaved] = useState(false);
+
+  const handleSaveConfig = () => {
+    setIsSaved(true);
+    setTimeout(() => setIsSaved(false), 2000);
+  };
+
   const handleReloadModels = async () => {
     setIsProbing(true);
     try {
@@ -454,13 +461,26 @@ next.config.js
               <label className="block text-[10px] uppercase text-[var(--muted)] mb-1">
                 API Key {provider === 'ollama' ? '(Optional)' : ''}
               </label>
-              <input 
-                type="password" 
-                value={apiKeys[provider] || ''}
-                onChange={(e) => handleKeyChange(provider, e.target.value)}
-                placeholder={`Enter ${provider} API Key...`}
-                className="input-japanese block w-full px-2 py-1 text-xs rounded bg-black/20 text-[var(--foreground)] focus:border-[var(--accent-primary)] border-transparent"
-              />
+              <div className="flex gap-2">
+                <input 
+                  type="password" 
+                  value={apiKeys[provider] || ''}
+                  onChange={(e) => handleKeyChange(provider, e.target.value)}
+                  placeholder={`Enter ${provider} API Key...`}
+                  className="input-japanese block w-full px-2 py-1 text-xs rounded bg-black/20 text-[var(--foreground)] focus:border-[var(--accent-primary)] border-transparent"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveConfig}
+                  className={`px-3 py-1 text-xs rounded transition-colors whitespace-nowrap flex items-center justify-center min-w-[70px] ${
+                    isSaved 
+                      ? 'bg-green-500/20 text-green-400 border border-green-500/30' 
+                      : 'bg-[var(--accent-primary)]/10 text-[var(--accent-primary)] border border-[var(--accent-primary)]/30 hover:bg-[var(--accent-primary)]/20'
+                  }`}
+                >
+                  {isSaved ? '✓ Saved' : 'Save'}
+                </button>
+              </div>
             </div>
             
             {/* Subscription Helper Text */}

@@ -65,6 +65,8 @@ class ChatCompletionRequest(BaseModel):
     excluded_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to exclude from processing")
     included_dirs: Optional[str] = Field(None, description="Comma-separated list of directories to include exclusively")
     included_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to include exclusively")
+    api_key: Optional[str] = Field(None, description="Optional custom API key")
+    api_endpoint: Optional[str] = Field(None, description="Optional custom API endpoint")
 
 async def handle_websocket_chat(websocket: WebSocket):
     """
@@ -487,16 +489,22 @@ This file contains...
                 model_kwargs=model_kwargs,
                 model_type=ModelType.LLM
             )
-        elif request.provider == "openai":
+        elif request.provider in ("openai", "openai_custom"):
             logger.info(f"Using Openai protocol with model: {request.model}")
 
             # Check if an API key is set for Openai
-            if not OPENAI_API_KEY:
-                logger.warning("OPENAI_API_KEY not configured, but continuing with request")
+            if not OPENAI_API_KEY and not request.api_key:
+                logger.warning("API key not configured, but continuing with request")
                 # We'll let the OpenAIClient handle this and return an error message
 
             # Initialize Openai client
-            model = OpenAIClient()
+            client_kwargs = {}
+            if request.api_key:
+                client_kwargs['api_key'] = request.api_key
+            if request.api_endpoint:
+                client_kwargs['base_url'] = request.api_endpoint
+
+            model = OpenAIClient(**client_kwargs)
             model_kwargs = {
                 "model": request.model,
                 "stream": True,
@@ -511,16 +519,19 @@ This file contains...
                 model_kwargs=model_kwargs,
                 model_type=ModelType.LLM
             )
-        elif request.provider == "litellm":
-            logger.info(f"Using Openai protocol with model on LiteLLM: {request.model}")
+        elif request.provider in ("litellm", "claude"):
+            logger.info(f"Using Openai protocol with model on LiteLLM for provider: {request.provider}")
 
-            # Check if an API key is set for Litellm
-            if not LITELLM_API_KEY:
-                logger.warning("LITELLM_API_KEY not configured, but continuing with request")
-                # We'll let the OpenAIClient handle this and return an error message
+            # Check if an API key is set
+            if not LITELLM_API_KEY and not request.api_key:
+                logger.warning("API key not configured, but continuing with request")
 
             # Initialize LiteLLM client
-            model = LiteLLMClient()
+            client_kwargs = {}
+            if request.api_key:
+                client_kwargs['api_key'] = request.api_key
+            
+            model = LiteLLMClient(**client_kwargs)
             model_kwargs = {
                 "model": request.model,
                 "stream": True,
@@ -591,6 +602,9 @@ This file contains...
                 model_type=ModelType.LLM
             )
         else:
+            # Configure API key for Google GenAI if provided
+            if request.api_key:
+                genai.configure(api_key=request.api_key)
             # Initialize Google Generative AI model
             model = genai.GenerativeModel(
                 model_name=model_config["model"],
@@ -648,7 +662,7 @@ This file contains...
                     await websocket.send_text(error_msg)
                     # Close the WebSocket connection after sending the error message
                     await websocket.close()
-            elif request.provider == "openai":
+            elif request.provider in ("openai", "openai_custom"):
                 try:
                     # Get the response and handle it properly using the previously created api_kwargs
                     logger.info("Making Openai API call")
@@ -670,7 +684,7 @@ This file contains...
                     await websocket.send_text(error_msg)
                     # Close the WebSocket connection after sending the error message
                     await websocket.close()
-            elif request.provider == "litellm":
+            elif request.provider in ("litellm", "claude"):
                 try:
                     # Get the response and handle it properly using the previously created api_kwargs
                     logger.info("Making LiteLLM API call")
@@ -824,7 +838,7 @@ This file contains...
                             logger.error(f"Error with OpenRouter API fallback: {str(e_fallback)}")
                             error_msg = f"\nError with OpenRouter API fallback: {str(e_fallback)}\n\nPlease check that you have set the OPENROUTER_API_KEY environment variable with a valid API key."
                             await websocket.send_text(error_msg)
-                    elif request.provider == "openai":
+                    elif request.provider in ("openai", "openai_custom"):
                         try:
                             # Create new api_kwargs with the simplified prompt
                             fallback_api_kwargs = model.convert_inputs_to_api_kwargs(
@@ -845,7 +859,7 @@ This file contains...
                             logger.error(f"Error with Openai API fallback: {str(e_fallback)}")
                             error_msg = f"\nError with Openai API fallback: {str(e_fallback)}\n\nPlease check that you have set the OPENAI_API_KEY environment variable with a valid API key."
                             await websocket.send_text(error_msg)
-                    elif request.provider == "litellm":
+                    elif request.provider in ("litellm", "claude"):
                         try:
                             # Create new api_kwargs with the simplified prompt
                             fallback_api_kwargs = model.convert_inputs_to_api_kwargs(
@@ -955,6 +969,8 @@ This file contains...
                             await websocket.send_text(error_msg)
                     else:
                         # Google Generative AI fallback (default provider)
+                        if request.api_key:
+                            genai.configure(api_key=request.api_key)
                         model_config = get_model_config(request.provider, request.model)
                         fallback_model = genai.GenerativeModel(
                             model_name=model_config["model_kwargs"]["model"],
