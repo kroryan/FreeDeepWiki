@@ -22,6 +22,8 @@ datas = [
     ('.next/static', '.next/static'),
     # Package python api package
     ('api', 'api'),
+    # Package scripts package (includes freedeepwiki_config.py for runtime Ollama discovery)
+    ('scripts', 'scripts'),
 ]
 
 # Package the Node binary if present
