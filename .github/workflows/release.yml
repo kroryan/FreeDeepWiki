@@ -106,9 +106,10 @@ jobs:
         run: |
           # 1. Create AppDir structure
           mkdir -p AppDir/usr/bin
-          
-          # 2. Copy launcher binary and assets
-          cp dist/freedeepwiki AppDir/usr/bin/
+
+          # 2. Copy launcher (onedir build: a folder containing the exe +
+          # _internal/, not a single file) and assets
+          cp -r dist/freedeepwiki/. AppDir/usr/bin/
           cp public/freedeepwiki.svg AppDir/freedeepwiki.svg
           
           # 3. Create AppRun script

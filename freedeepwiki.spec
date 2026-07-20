@@ -97,24 +97,62 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
-exe = EXE(
-    pyz,
-    a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    [],
-    name='freedeepwiki',
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    runtime_tmpdir=None,
-    console=True,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
-)
+if is_win:
+    # Windows keeps onefile: users download one .exe and double-click it, and
+    # onefile's per-run extraction to %TEMP% is fast enough there not to matter.
+    exe = EXE(
+        pyz,
+        a.scripts,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        [],
+        name='freedeepwiki',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        runtime_tmpdir=None,
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+else:
+    # Linux uses onedir: the AppImage already wraps everything into a single
+    # file for the user, so there is no UX benefit to onefile here — and
+    # onefile's bootloader re-extracts the whole bundle (Node.js binary, FAISS,
+    # adalflow, the Next.js standalone build, ...) into a fresh /tmp/_MEIxxxxxx
+    # on EVERY launch, with no way to cache that across runs. onedir extracts
+    # once at build time; sys._MEIPASS then points straight at the on-disk
+    # folder, so every launch skips extraction entirely.
+    exe = EXE(
+        pyz,
+        a.scripts,
+        [],
+        exclude_binaries=True,
+        name='freedeepwiki',
+        debug=False,
+        bootloader_ignore_signals=False,
+        strip=False,
+        upx=True,
+        console=True,
+        disable_windowed_traceback=False,
+        argv_emulation=False,
+        target_arch=None,
+        codesign_identity=None,
+        entitlements_file=None,
+    )
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name='freedeepwiki',
+    )
