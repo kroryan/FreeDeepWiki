@@ -1,10 +1,8 @@
 import logging
-import os
-from typing import List, Optional, Dict, Any
+from typing import Optional, Dict, Any
 from urllib.parse import unquote
 
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
-from pydantic import BaseModel, Field
 
 from api.config import (
     get_model_config,
@@ -15,9 +13,14 @@ from api.config import (
     AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY,
 )
+from api.agent_loop import MAX_TOOL_ROUNDS, run_agent_chat
+from api.chat_models import ChatCompletionRequest, ChatMessage  # noqa: F401 (ChatMessage re-exported for callers)
 from api.data_pipeline import count_tokens, get_file_content
+from api.prompts import TOOL_CALLING_INSTRUCTIONS
 from api.provider_streaming import stream_provider_response
 from api.rag import RAG
+from api import search_tool
+from api import zim_reader
 
 # Configure logging
 from api.logging_config import setup_logging
@@ -25,40 +28,6 @@ from api.logging_config import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
-
-# Models for the API
-class ChatMessage(BaseModel):
-    role: str  # 'user' or 'assistant'
-    content: str
-
-class ChatCompletionRequest(BaseModel):
-    """
-    Model for requesting a chat completion.
-    """
-    repo_url: str = Field(..., description="URL of the repository to query")
-    messages: List[ChatMessage] = Field(..., description="List of chat messages")
-    retrieval_query: Optional[str] = Field(
-        None,
-        description="Optional concise query used only for semantic retrieval",
-    )
-    filePath: Optional[str] = Field(None, description="Optional path to a file in the repository to include in the prompt")
-    token: Optional[str] = Field(None, description="Personal access token for private repositories")
-    type: Optional[str] = Field("github", description="Type of repository (e.g., 'github', 'gitlab', 'bitbucket')")
-
-    # model parameters
-    provider: str = Field(
-        "google",
-        description="Model provider (google, openai, openrouter, ollama, bedrock, azure, dashscope)",
-    )
-    model: Optional[str] = Field(None, description="Model name for the specified provider")
-
-    language: Optional[str] = Field("en", description="Language for content generation (e.g., 'en', 'ja', 'zh', 'es', 'kr', 'vi')")
-    excluded_dirs: Optional[str] = Field(None, description="Comma-separated list of directories to exclude from processing")
-    excluded_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to exclude from processing")
-    included_dirs: Optional[str] = Field(None, description="Comma-separated list of directories to include exclusively")
-    included_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to include exclusively")
-    api_key: Optional[str] = Field(None, description="Optional custom API key")
-    api_endpoint: Optional[str] = Field(None, description="Optional custom API endpoint")
 
 async def handle_websocket_chat(websocket: WebSocket):
     """
@@ -83,56 +52,76 @@ async def handle_websocket_chat(websocket: WebSocket):
                     logger.warning(f"Request exceeds recommended token limit ({tokens} > 7500)")
                     input_too_large = True
 
-        # Create a new RAG instance for this request
-        try:
-            request_rag = RAG(
-                provider=request.provider,
-                model=request.model,
-                api_key=request.api_key,
-                api_endpoint=request.api_endpoint
-            )
+        # ZIM archives never go through RAG/prepare_retriever: that pipeline
+        # decides "local repo" purely by whether repo_url starts with
+        # http(s):// (see data_pipeline.prepare_database), so handing it a
+        # .zim file path would make it try to treat the archive as a source
+        # code directory and fail confusingly. For type == 'zim', repo_url
+        # IS the .zim file's absolute path (mirroring how type == 'local'
+        # already repurposes repo_url as a filesystem path) -- all context
+        # comes exclusively from api.search_tool / zim_reader instead.
+        is_zim = request.type == "zim"
+        request_rag = None
 
-            # Extract custom file filter parameters if provided
-            excluded_dirs = None
-            excluded_files = None
-            included_dirs = None
-            included_files = None
-
-            if request.excluded_dirs:
-                excluded_dirs = [unquote(dir_path) for dir_path in request.excluded_dirs.split('\n') if dir_path.strip()]
-                logger.info(f"Using custom excluded directories: {excluded_dirs}")
-            if request.excluded_files:
-                excluded_files = [unquote(file_pattern) for file_pattern in request.excluded_files.split('\n') if file_pattern.strip()]
-                logger.info(f"Using custom excluded files: {excluded_files}")
-            if request.included_dirs:
-                included_dirs = [unquote(dir_path) for dir_path in request.included_dirs.split('\n') if dir_path.strip()]
-                logger.info(f"Using custom included directories: {included_dirs}")
-            if request.included_files:
-                included_files = [unquote(file_pattern) for file_pattern in request.included_files.split('\n') if file_pattern.strip()]
-                logger.info(f"Using custom included files: {included_files}")
-
-            request_rag.prepare_retriever(request.repo_url, request.type, request.token, excluded_dirs, excluded_files, included_dirs, included_files)
-            logger.info(f"Retriever prepared for {request.repo_url}")
-        except ValueError as e:
-            if "No valid documents with embeddings found" in str(e):
-                logger.error(f"No valid embeddings found: {str(e)}")
-                await websocket.send_text("Error: No valid document embeddings found. This may be due to embedding size inconsistencies or API errors during document processing. Please try again or check your repository content.")
+        if is_zim:
+            try:
+                zim_reader.open_archive(request.repo_url)
+            except Exception as e:
+                logger.error(f"Failed to open ZIM file {request.repo_url}: {e}")
+                await websocket.send_text(f"Error opening ZIM archive: {str(e)}")
                 await websocket.close()
                 return
-            else:
-                logger.error(f"ValueError preparing retriever: {str(e)}")
-                await websocket.send_text(f"Error preparing retriever: {str(e)}")
+        else:
+            # Create a new RAG instance for this request
+            try:
+                request_rag = RAG(
+                    provider=request.provider,
+                    model=request.model,
+                    api_key=request.api_key,
+                    api_endpoint=request.api_endpoint
+                )
+
+                # Extract custom file filter parameters if provided
+                excluded_dirs = None
+                excluded_files = None
+                included_dirs = None
+                included_files = None
+
+                if request.excluded_dirs:
+                    excluded_dirs = [unquote(dir_path) for dir_path in request.excluded_dirs.split('\n') if dir_path.strip()]
+                    logger.info(f"Using custom excluded directories: {excluded_dirs}")
+                if request.excluded_files:
+                    excluded_files = [unquote(file_pattern) for file_pattern in request.excluded_files.split('\n') if file_pattern.strip()]
+                    logger.info(f"Using custom excluded files: {excluded_files}")
+                if request.included_dirs:
+                    included_dirs = [unquote(dir_path) for dir_path in request.included_dirs.split('\n') if dir_path.strip()]
+                    logger.info(f"Using custom included directories: {included_dirs}")
+                if request.included_files:
+                    included_files = [unquote(file_pattern) for file_pattern in request.included_files.split('\n') if file_pattern.strip()]
+                    logger.info(f"Using custom included files: {included_files}")
+
+                request_rag.prepare_retriever(request.repo_url, request.type, request.token, excluded_dirs, excluded_files, included_dirs, included_files)
+                logger.info(f"Retriever prepared for {request.repo_url}")
+            except ValueError as e:
+                if "No valid documents with embeddings found" in str(e):
+                    logger.error(f"No valid embeddings found: {str(e)}")
+                    await websocket.send_text("Error: No valid document embeddings found. This may be due to embedding size inconsistencies or API errors during document processing. Please try again or check your repository content.")
+                    await websocket.close()
+                    return
+                else:
+                    logger.error(f"ValueError preparing retriever: {str(e)}")
+                    await websocket.send_text(f"Error preparing retriever: {str(e)}")
+                    await websocket.close()
+                    return
+            except Exception as e:
+                logger.error(f"Error preparing retriever: {str(e)}")
+                # Check for specific embedding-related errors
+                if "All embeddings should be of the same size" in str(e):
+                    await websocket.send_text("Error: Inconsistent embedding sizes detected. Some documents may have failed to embed properly. Please try again.")
+                else:
+                    await websocket.send_text(f"Error preparing retriever: {str(e)}")
                 await websocket.close()
                 return
-        except Exception as e:
-            logger.error(f"Error preparing retriever: {str(e)}")
-            # Check for specific embedding-related errors
-            if "All embeddings should be of the same size" in str(e):
-                await websocket.send_text("Error: Inconsistent embedding sizes detected. Some documents may have failed to embed properly. Please try again.")
-            else:
-                await websocket.send_text(f"Error preparing retriever: {str(e)}")
-            await websocket.close()
-            return
 
         # Validate request
         if not request.messages or len(request.messages) == 0:
@@ -146,17 +135,28 @@ async def handle_websocket_chat(websocket: WebSocket):
             await websocket.close()
             return
 
-        # Process previous messages to build conversation history
+        # Process previous messages to build conversation history. ZIM chats
+        # have no RAG/Memory instance, so their history is rendered directly
+        # from request.messages in the same <turn> XML shape Memory produces
+        # (see conversation_history assembly below) instead of going through
+        # request_rag.memory.
+        zim_conversation_history = ""
         for i in range(0, len(request.messages) - 1, 2):
             if i + 1 < len(request.messages):
                 user_msg = request.messages[i]
                 assistant_msg = request.messages[i + 1]
 
                 if user_msg.role == "user" and assistant_msg.role == "assistant":
-                    request_rag.memory.add_dialog_turn(
-                        user_query=user_msg.content,
-                        assistant_response=assistant_msg.content
-                    )
+                    if is_zim:
+                        zim_conversation_history += (
+                            f"<turn>\n<user>{user_msg.content}</user>\n"
+                            f"<assistant>{assistant_msg.content}</assistant>\n</turn>\n"
+                        )
+                    else:
+                        request_rag.memory.add_dialog_turn(
+                            user_query=user_msg.content,
+                            assistant_response=assistant_msg.content
+                        )
 
         # Check if this is a Deep Research request
         is_deep_research = False
@@ -194,11 +194,38 @@ async def handle_websocket_chat(websocket: WebSocket):
         # Get the query from the last message
         query = last_message.content
 
+        # Agent tool-calling (SEARCH_WIKI: <query> mid-answer, see
+        # api/agent_loop.py) is opt-out via the request flag and an env var
+        # killswitch, and never runs for Deep Research -- that flow already
+        # has its own multi-iteration structure and prompts. Shared with
+        # simple_chat.py so the two transports can't drift on this.
+        tool_calling_enabled, search_fn = search_tool.resolve_tool_calling(
+            enable_tool_calling=request.enable_tool_calling,
+            is_deep_research=is_deep_research,
+            is_zim=is_zim,
+            zim_path=request.repo_url if is_zim else None,
+            request_rag=request_rag,
+            language=request.language,
+        )
+
         # Only retrieve documents if input is not too large
         context_text = ""
         retrieved_documents = None
 
-        if not input_too_large:
+        if is_zim:
+            # Scoped context: the current entry (if the chat was opened from
+            # one) plus a handful of related entries via libzim's own
+            # full-text index -- never the whole archive, which can hold
+            # millions of entries. Falls back to searching the user's query
+            # when there's no "current page" anchor.
+            try:
+                context_text = search_tool.build_zim_context(
+                    request.repo_url, query, request.current_page_id, limit=5
+                )
+            except Exception as e:
+                logger.error(f"Error building ZIM context: {str(e)}")
+                context_text = ""
+        elif not input_too_large:
             try:
                 # If filePath exists, modify the query for RAG to focus on the file
                 rag_query = request.retrieval_query or query
@@ -206,6 +233,13 @@ async def handle_websocket_chat(websocket: WebSocket):
                     # Use the file path to get relevant context about the file
                     rag_query = f"Contexts related to {request.filePath}"
                     logger.info(f"Modified RAG query to focus on file: {request.filePath}")
+                elif request.current_page_id:
+                    # Anchor retrieval to the wiki page the chat was opened
+                    # from, so results are scoped to that page instead of the
+                    # whole repo (page content itself lives in the frontend,
+                    # not here, so the page id/title is the anchor we have).
+                    rag_query = f"Contexts related to {request.current_page_id}"
+                    logger.info(f"Modified RAG query to focus on current page: {request.current_page_id}")
 
                 # Try to perform RAG retrieval
                 try:
@@ -254,6 +288,12 @@ async def handle_websocket_chat(websocket: WebSocket):
         # Determine repository type
         repo_type = request.type
 
+        # Wording used in the system prompt's <role> line below: a .zim is an
+        # offline wiki archive, not a git code repository -- keeping the
+        # "code analyst" framing for it would confuse the model into looking
+        # for source files that don't exist.
+        subject_kind = "offline wiki archive" if is_zim else f"{repo_type} repository"
+
         # Get language information
         language_code = request.language or configs["lang_config"]["default"]
         supported_langs = configs["lang_config"]["supported_languages"]
@@ -269,7 +309,7 @@ async def handle_websocket_chat(websocket: WebSocket):
 
             if is_first_iteration:
                 system_prompt = f"""<role>
-You are an expert code analyst examining the {repo_type} repository: {repo_url} ({repo_name}).
+You are an expert analyst examining the {subject_kind}: {repo_url} ({repo_name}).
 You are conducting a multi-turn Deep Research process to thoroughly investigate the specific topic in the user's query.
 Your goal is to provide detailed, focused information EXCLUSIVELY about this topic.
 IMPORTANT:You MUST respond in {language_name} language.
@@ -299,7 +339,7 @@ IMPORTANT:You MUST respond in {language_name} language.
 </style>"""
             elif is_final_iteration:
                 system_prompt = f"""<role>
-You are an expert code analyst examining the {repo_type} repository: {repo_url} ({repo_name}).
+You are an expert analyst examining the {subject_kind}: {repo_url} ({repo_name}).
 You are in the final iteration of a Deep Research process focused EXCLUSIVELY on the latest user query.
 Your goal is to synthesize all previous findings and provide a comprehensive conclusion that directly addresses this specific topic and ONLY this topic.
 IMPORTANT:You MUST respond in {language_name} language.
@@ -331,7 +371,7 @@ IMPORTANT:You MUST respond in {language_name} language.
 </style>"""
             else:
                 system_prompt = f"""<role>
-You are an expert code analyst examining the {repo_type} repository: {repo_url} ({repo_name}).
+You are an expert analyst examining the {subject_kind}: {repo_url} ({repo_name}).
 You are currently in iteration {research_iteration} of a Deep Research process focused EXCLUSIVELY on the latest user query.
 Your goal is to build upon previous research iterations and go deeper into this specific topic without deviating from it.
 IMPORTANT:You MUST respond in {language_name} language.
@@ -362,8 +402,8 @@ IMPORTANT:You MUST respond in {language_name} language.
 </style>"""
         else:
             system_prompt = f"""<role>
-You are an expert code analyst examining the {repo_type} repository: {repo_url} ({repo_name}).
-You provide direct, concise, and accurate information about code repositories.
+You are an expert analyst examining the {subject_kind}: {repo_url} ({repo_name}).
+You provide direct, concise, and accurate information based on the provided context.
 You NEVER start responses with markdown headers or code fences.
 IMPORTANT:You MUST respond in {language_name} language.
 </role>
@@ -413,11 +453,16 @@ This file contains...
                 logger.error(f"Error retrieving file content: {str(e)}")
                 # Continue without file content if there's an error
 
-        # Format conversation history
-        conversation_history = ""
-        for turn_id, turn in request_rag.memory().items():
-            if not isinstance(turn_id, int) and hasattr(turn, 'user_query') and hasattr(turn, 'assistant_response'):
-                conversation_history += f"<turn>\n<user>{turn.user_query.query_str}</user>\n<assistant>{turn.assistant_response.response_str}</assistant>\n</turn>\n"
+        # Format conversation history (ZIM chats have no RAG/Memory instance;
+        # their history was already rendered into zim_conversation_history
+        # above, in the same <turn> shape Memory produces).
+        if is_zim:
+            conversation_history = zim_conversation_history
+        else:
+            conversation_history = ""
+            for turn_id, turn in request_rag.memory().items():
+                if not isinstance(turn_id, int) and hasattr(turn, 'user_query') and hasattr(turn, 'assistant_response'):
+                    conversation_history += f"<turn>\n<user>{turn.user_query.query_str}</user>\n<assistant>{turn.assistant_response.response_str}</assistant>\n</turn>\n"
 
         # Create the prompt with context
         prompt = f"/no_think {system_prompt}\n\n"
@@ -439,6 +484,12 @@ This file contains...
             # Add a note that we're skipping RAG due to size constraints or because it's the isolated API
             logger.info("No context available from RAG")
             prompt += "<note>Answering without retrieval augmentation.</note>\n\n"
+
+        if tool_calling_enabled:
+            prompt += TOOL_CALLING_INSTRUCTIONS.format(
+                subject="ZIM archive" if is_zim else "repository",
+                max_rounds=MAX_TOOL_ROUNDS,
+            ) + "\n\n"
 
         prompt += f"<query>\n{query}\n</query>\n\nAssistant: "
 
@@ -497,16 +548,31 @@ This file contains...
         elif request.provider == "bedrock" and (not AWS_ACCESS_KEY_ID or not AWS_SECRET_ACCESS_KEY):
             logger.warning("AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY not configured, but continuing with request")
 
-        # Process the response based on the provider
+        # Process the response based on the provider. When tool calling is
+        # enabled, run_agent_chat wraps stream_provider_response with the
+        # SEARCH_WIKI sniff-and-relay loop (api/agent_loop.py); otherwise
+        # this is the original single-shot stream.
         try:
-            async for text in stream_provider_response(
-                provider=request.provider,
-                requested_model=request.model,
-                prompt=prompt,
-                model_config_kwargs=model_config,
-                api_key=request.api_key,
-                api_endpoint=request.api_endpoint,
-            ):
+            if tool_calling_enabled:
+                response_stream = run_agent_chat(
+                    provider=request.provider,
+                    requested_model=request.model,
+                    prompt=prompt,
+                    model_config_kwargs=model_config,
+                    api_key=request.api_key,
+                    api_endpoint=request.api_endpoint,
+                    search_fn=search_fn,
+                )
+            else:
+                response_stream = stream_provider_response(
+                    provider=request.provider,
+                    requested_model=request.model,
+                    prompt=prompt,
+                    model_config_kwargs=model_config,
+                    api_key=request.api_key,
+                    api_endpoint=request.api_endpoint,
+                )
+            async for text in response_stream:
                 await websocket.send_text(text)
             await websocket.close()
 

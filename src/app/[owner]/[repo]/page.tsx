@@ -8,6 +8,7 @@ import ThemeToggle from '@/components/theme-toggle';
 import WikiTreeView from '@/components/WikiTreeView';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
+import { getSavedApiCredentials } from '@/utils/apiCredentials';
 import getRepoUrl from '@/utils/getRepoUrl';
 import { WEBSOCKET_CONNECT_TIMEOUT_MS } from '@/utils/timeouts';
 import { extractUrlDomain, extractUrlPath } from '@/utils/urlDecoder';
@@ -15,7 +16,7 @@ import { normalizeWikiPageCount } from '@/utils/wikiPageCount';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FaBitbucket, FaBookOpen, FaComments, FaDownload, FaExclamationTriangle, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHistory, FaHome, FaSync, FaTimes, FaTrash } from 'react-icons/fa';
+import { FaBitbucket, FaBookOpen, FaComments, FaDownload, FaEdit, FaExclamationTriangle, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHistory, FaHome, FaMagic, FaSave, FaSync, FaTimes, FaTrash } from 'react-icons/fa';
 // Define the WikiSection and WikiStructure types directly in this file
 // since the imported types don't have the sections and rootSections properties
 interface WikiSection {
@@ -285,6 +286,16 @@ export default function RepoWikiPage() {
   const [effectiveRepoInfo, setEffectiveRepoInfo] = useState(repoInfo); // Track effective repo info with cached data
   const [embeddingError, setEmbeddingError] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
+
+  // Page edit mode (manual textarea + AI-assisted rewrite). Never
+  // autosaves -- editedContent only replaces generatedPages[pageId] on an
+  // explicit Save, and is discarded on Cancel or navigating away.
+  const [isEditingPage, setIsEditingPage] = useState(false);
+  const [editedContent, setEditedContent] = useState('');
+  const [editInstruction, setEditInstruction] = useState('');
+  const [isAiEditing, setIsAiEditing] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
 
   // Model selection state variables
   const [selectedProviderState, setSelectedProviderState] = useState(providerParam);
@@ -2283,6 +2294,105 @@ IMPORTANT:
   const handlePageSelect = (pageId: string) => {
     if (currentPageId != pageId) {
       setCurrentPageId(pageId)
+      // Unsaved edits are scoped to the page being edited -- navigating
+      // away discards them rather than silently carrying them to whatever
+      // page is selected next.
+      setIsEditingPage(false);
+      setEditError(null);
+    }
+  };
+
+  const startEditingPage = () => {
+    if (!currentPageId || !generatedPages[currentPageId]) return;
+    setEditedContent(generatedPages[currentPageId].content);
+    setEditInstruction('');
+    setEditError(null);
+    setIsEditingPage(true);
+  };
+
+  const cancelEditingPage = () => {
+    setIsEditingPage(false);
+    setEditedContent('');
+    setEditInstruction('');
+    setEditError(null);
+  };
+
+  const handleAiEditPage = async () => {
+    if (!currentPageId || !generatedPages[currentPageId] || !editInstruction.trim() || isAiEditing) return;
+    setIsAiEditing(true);
+    setEditError(null);
+    try {
+      const response = await fetch('/api/wiki/page/edit/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          page_title: generatedPages[currentPageId].title,
+          current_content: editedContent,
+          instruction: editInstruction,
+          provider: selectedProviderState,
+          model: isCustomSelectedModelState ? customSelectedModelState : selectedModelState,
+          language,
+          ...getSavedApiCredentials(selectedProviderState),
+        }),
+      });
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => '');
+        throw new Error(errorText || `AI edit failed: ${response.status}`);
+      }
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('Failed to get response reader');
+      const decoder = new TextDecoder();
+      let rewritten = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        rewritten += decoder.decode(value, { stream: true });
+        setEditedContent(rewritten);
+      }
+      rewritten += decoder.decode();
+      // Same cleanup as the initial page-generation flow, in case the model
+      // wraps its answer in a fence despite being told not to.
+      setEditedContent(rewritten.replace(/^```markdown\s*/i, '').replace(/```\s*$/i, ''));
+    } catch (err) {
+      console.error('AI page edit failed:', err);
+      setEditError(err instanceof Error ? err.message : 'AI edit failed');
+    } finally {
+      setIsAiEditing(false);
+    }
+  };
+
+  const handleSaveEditedPage = async () => {
+    if (!currentPageId || isSavingEdit) return;
+    setIsSavingEdit(true);
+    setEditError(null);
+    try {
+      const response = await fetch('/api/wiki_cache/page', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repo: effectiveRepoInfo,
+          language,
+          page_id: currentPageId,
+          content: editedContent,
+        }),
+      });
+      if (!response.ok) {
+        const errBody = await response.json().catch(() => ({}));
+        throw new Error(errBody.detail || `Save failed: ${response.status}`);
+      }
+      const savedPageId = currentPageId;
+      setGeneratedPages(prev => ({
+        ...prev,
+        [savedPageId]: { ...prev[savedPageId], content: editedContent },
+      }));
+      setOriginalMarkdown(prev => ({ ...prev, [savedPageId]: editedContent }));
+      setIsEditingPage(false);
+      loadWikiReleases();
+    } catch (err) {
+      console.error('Saving edited page failed:', err);
+      setEditError(err instanceof Error ? err.message : 'Save failed');
+    } finally {
+      setIsSavingEdit(false);
     }
   };
 
@@ -2572,19 +2682,83 @@ IMPORTANT:
             <div id="wiki-content" className="wiki-content">
               {currentPageId && generatedPages[currentPageId] ? (
                 <div className="w-full">
-                  <h3 className="text-xl font-bold text-[var(--foreground)] mb-4 break-words font-serif">
-                    {generatedPages[currentPageId].title}
-                  </h3>
-
-
-
-                  <div className="prose prose-sm md:prose-base lg:prose-lg max-w-none">
-                    <Markdown
-                      content={generatedPages[currentPageId].content}
-                    />
+                  <div className="flex items-start justify-between gap-3 mb-4">
+                    <h3 className="text-xl font-bold text-[var(--foreground)] break-words font-serif">
+                      {generatedPages[currentPageId].title}
+                    </h3>
+                    {!isEditingPage && (
+                      <button
+                        onClick={startEditingPage}
+                        className="shrink-0 flex items-center gap-1.5 text-xs font-mono px-2.5 py-1.5 rounded-md border border-[var(--border-color)] text-[var(--muted)] hover:text-[var(--accent-primary)] hover:border-[var(--accent-primary)] transition-colors"
+                        title={messages.repoPage?.editPage || 'Edit this page'}
+                      >
+                        <FaEdit className="text-xs" />
+                        {messages.repoPage?.editPage || 'Edit'}
+                      </button>
+                    )}
                   </div>
 
-                  {generatedPages[currentPageId].relatedPages.length > 0 && (
+                  {isEditingPage ? (
+                    <div className="mb-6 flex flex-col gap-3">
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <input
+                          type="text"
+                          value={editInstruction}
+                          onChange={(e) => setEditInstruction(e.target.value)}
+                          placeholder={messages.repoPage?.editInstructionPlaceholder || 'Tell the AI what to change (optional)...'}
+                          className="input-japanese flex-1 px-3 py-2 rounded-lg border-[var(--border-color)] bg-transparent text-sm text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                          disabled={isAiEditing || isSavingEdit}
+                        />
+                        <button
+                          onClick={handleAiEditPage}
+                          disabled={!editInstruction.trim() || isAiEditing || isSavingEdit}
+                          className="shrink-0 flex items-center justify-center gap-1.5 text-xs font-mono px-3 py-2 rounded-md bg-[var(--accent-primary)]/10 text-[var(--accent-primary)] border border-[var(--accent-primary)]/30 hover:bg-[var(--accent-primary)]/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <FaMagic className={isAiEditing ? 'animate-spin' : ''} />
+                          {messages.repoPage?.askAi || 'Ask AI'}
+                        </button>
+                      </div>
+
+                      <textarea
+                        value={editedContent}
+                        onChange={(e) => setEditedContent(e.target.value)}
+                        rows={20}
+                        disabled={isSavingEdit}
+                        className="input-japanese w-full px-3 py-2 rounded-lg border-[var(--border-color)] bg-transparent text-sm text-[var(--foreground)] font-mono focus:outline-none focus:border-[var(--accent-primary)] resize-y"
+                      />
+
+                      {editError && (
+                        <p className="text-xs text-[var(--highlight)]">{editError}</p>
+                      )}
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleSaveEditedPage}
+                          disabled={isSavingEdit || isAiEditing}
+                          className="flex items-center gap-1.5 text-xs font-mono px-3 py-2 rounded-md bg-[var(--accent-primary)] text-black hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          <FaSave className={isSavingEdit ? 'animate-spin' : ''} />
+                          {messages.repoPage?.save || 'Save'}
+                        </button>
+                        <button
+                          onClick={cancelEditingPage}
+                          disabled={isSavingEdit}
+                          className="flex items-center gap-1.5 text-xs font-mono px-3 py-2 rounded-md border border-[var(--border-color)] text-[var(--muted)] hover:text-[var(--foreground)] transition-colors disabled:opacity-50"
+                        >
+                          <FaTimes />
+                          {messages.repoPage?.cancel || 'Cancel'}
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="prose prose-sm md:prose-base lg:prose-lg max-w-none">
+                      <Markdown
+                        content={generatedPages[currentPageId].content}
+                      />
+                    </div>
+                  )}
+
+                  {!isEditingPage && generatedPages[currentPageId].relatedPages.length > 0 && (
                     <div className="mt-8 pt-4 border-t border-[var(--border-color)]">
                       <h4 className="text-sm font-semibold text-[var(--muted)] mb-3">
                         {messages.repoPage?.relatedPages || 'Related Pages:'}
@@ -2665,6 +2839,7 @@ IMPORTANT:
             isCustomModel={isCustomSelectedModelState}
             customModel={customSelectedModelState}
             language={language}
+            currentPageId={currentPageId}
             onRef={(ref) => (askComponentRef.current = ref)}
           />
         </div>

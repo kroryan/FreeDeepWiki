@@ -26,6 +26,12 @@ export interface ChatCompletionRequest {
   filePath?: string;
   token?: string;
   type?: string;
+  // Wiki page id (repo chat) or ZIM entry path (type: 'zim') the chat was
+  // opened from. When set, the backend scopes the initial context to that
+  // page/entry plus a handful of related ones instead of the whole
+  // repo/archive -- important for .zim archives, which can hold millions
+  // of entries.
+  current_page_id?: string;
   provider?: string;
   model?: string;
   language?: string;

@@ -8,12 +8,15 @@ individual entries by path, and relies on libzim's built-in full-text search
 index (Xapian under the hood) rather than building our own index.
 """
 import logging
+import mimetypes
 import re
+import string
 import threading
 from typing import Optional, TypedDict
 
 from libzim.reader import Archive
 from libzim.search import Query, Searcher
+from libzim.suggestion import SuggestionSearcher
 
 logger = logging.getLogger(__name__)
 
@@ -90,12 +93,25 @@ def get_entry_content(archive: Archive, path: str) -> tuple[bytes, str]:
     """Return (content_bytes, mimetype) for the entry at `path`.
 
     Raises KeyError (via libzim) if the path does not exist in the archive.
+
+    Some archives (seen in the wild with DevDocs-sourced .zim files) store a
+    generic "application/octet-stream" mimetype for their own CSS/JS assets.
+    Browsers enforce strict MIME sniffing for stylesheets and scripts, so a
+    wrong type here means the page silently loses its styling/interactivity
+    with only a console warning to explain why. When libzim's own mimetype
+    is that generic fallback, prefer a type guessed from the path's
+    extension -- it only ever makes the type MORE specific, never less.
     """
     entry = archive.get_entry_by_path(path)
     if entry.is_redirect:
         entry = entry.get_redirect_entry()
     item = entry.get_item()
-    return bytes(item.content), item.mimetype
+    mimetype = item.mimetype
+    if not mimetype or mimetype == "application/octet-stream":
+        guessed, _ = mimetypes.guess_type(path)
+        if guessed:
+            mimetype = guessed
+    return bytes(item.content), mimetype
 
 
 def get_entry_title(archive: Archive, path: str) -> str:
@@ -126,6 +142,88 @@ def search_entries(archive: Archive, query: str, limit: int = 5) -> list[SearchH
     except Exception as e:
         logger.warning(f"ZIM search failed for query {query!r}: {e}")
         return []
+
+
+class IndexEntry(TypedDict):
+    path: str
+    title: str
+
+
+def build_title_index(archive: Archive, limit: int = 500) -> dict:
+    """Browsable index of the archive's article pages, sorted by title.
+
+    libzim's Python bindings expose no direct "enumerate every entry" call
+    (no __iter__, no get_entry_by_id) -- the only way to reach entries in
+    bulk is through the search/suggestion indexes.
+
+    Primary strategy: sweep the title-suggestion index by every
+    alphanumeric prefix and dedupe by path. In practice this reaches every
+    article in any archive that titles its pages with normal alphanumeric
+    text (verified: exactly matched article_count on a real DevDocs .zim).
+    It finds nothing for archives with no title-suggestion index built, or
+    ones titled purely in other scripts/symbols that never start with a-z0-9.
+
+    Fallback: if that sweep comes up empty (or clearly incomplete relative
+    to article_count) but the archive does have articles, fill in with
+    get_random_entry() calls instead -- not a real index (no ordering, no
+    guarantee of covering everything), but a working, always-available
+    "here are some pages" list beats an empty one.
+    """
+    seen: dict[str, str] = {}
+    try:
+        searcher = SuggestionSearcher(archive)
+        for prefix in string.ascii_lowercase + string.digits:
+            if len(seen) >= limit:
+                break
+            try:
+                suggestion = searcher.suggest(prefix)
+                paths = suggestion.getResults(0, limit)
+            except Exception as e:
+                logger.warning(f"ZIM index sweep failed for prefix {prefix!r}: {e}")
+                continue
+            for path in paths:
+                if path in seen or len(seen) >= limit:
+                    continue
+                try:
+                    entry = archive.get_entry_by_path(path)
+                    if entry.is_redirect:
+                        entry = entry.get_redirect_entry()
+                    if not entry.get_item().mimetype.startswith("text/html"):
+                        continue
+                    seen[path] = entry.title
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.warning(f"ZIM title-suggestion sweep unavailable: {e}")
+
+    if not seen and archive.article_count > 0:
+        target = min(limit, archive.article_count)
+        # get_random_entry() can repeat, especially once we've already
+        # collected most of a small archive -- cap attempts instead of
+        # looping until we hit `target`, which could spin forever on a
+        # small archive once every article's already been seen.
+        for _ in range(target * 4):
+            if len(seen) >= target:
+                break
+            try:
+                entry = archive.get_random_entry()
+                if entry.is_redirect:
+                    entry = entry.get_redirect_entry()
+                if not entry.get_item().mimetype.startswith("text/html"):
+                    continue
+                seen[entry.path] = entry.title
+            except Exception:
+                continue
+
+    entries: list[IndexEntry] = sorted(
+        ({"path": p, "title": t} for p, t in seen.items()),
+        key=lambda e: e["title"].lower(),
+    )
+    return {
+        "entries": entries,
+        "truncated": len(seen) >= limit and archive.article_count > limit,
+        "totalArticles": archive.article_count,
+    }
 
 
 def extract_plain_text(html: bytes, max_chars: int = 4000) -> str:

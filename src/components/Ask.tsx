@@ -13,6 +13,7 @@ import RepoInfo from '@/types/repoinfo';
 import getRepoUrl from '@/utils/getRepoUrl';
 import ModelSelectionModal from './ModelSelectionModal';
 import { createChatWebSocket, closeWebSocket, ChatCompletionRequest } from '@/utils/websocketClient';
+import { getSavedApiCredentials } from '@/utils/apiCredentials';
 
 interface Model {
   id: string;
@@ -52,32 +53,6 @@ interface ChatSession {
   researchComplete: boolean;
 }
 
-// Reads custom provider credentials saved by UserSelector so the chat/Ask
-// WebSocket requests can authenticate the same way wiki generation does.
-const getSavedApiCredentials = (provider: string): { api_key?: string; api_endpoint?: string } => {
-  if (typeof window === 'undefined' || !provider) return {};
-  const result: { api_key?: string; api_endpoint?: string } = {};
-  try {
-    const savedKeys = localStorage.getItem('deepwiki_api_keys');
-    if (savedKeys) {
-      const parsedKeys = JSON.parse(savedKeys);
-      if (parsedKeys[provider]) {
-        result.api_key = parsedKeys[provider];
-      }
-    }
-    const savedEndpoints = localStorage.getItem('deepwiki_api_endpoints');
-    if (savedEndpoints) {
-      const parsedEndpoints = JSON.parse(savedEndpoints);
-      if (parsedEndpoints[provider]) {
-        result.api_endpoint = parsedEndpoints[provider];
-      }
-    }
-  } catch (e) {
-    console.error('Failed to parse saved api settings in getSavedApiCredentials', e);
-  }
-  return result;
-};
-
 interface AskProps {
   repoInfo: RepoInfo;
   provider?: string;
@@ -85,6 +60,11 @@ interface AskProps {
   isCustomModel?: boolean;
   customModel?: string;
   language?: string;
+  // Wiki page id (repo chat) or ZIM entry path the chat was opened from --
+  // passed straight through to the backend, which scopes the initial
+  // context to that page/entry plus a handful of related ones instead of
+  // the whole repo/archive when it's set.
+  currentPageId?: string;
   onRef?: (ref: { clearConversation: () => void }) => void;
 }
 
@@ -95,6 +75,7 @@ const Ask: React.FC<AskProps> = ({
   isCustomModel = false,
   customModel = '',
   language = 'en',
+  currentPageId,
   onRef
 }) => {
   const [question, setQuestion] = useState('');
@@ -519,6 +500,7 @@ const Ask: React.FC<AskProps> = ({
       const requestBody: ChatCompletionRequest = {
         repo_url: getRepoUrl(repoInfo),
         type: repoInfo.type,
+        current_page_id: currentPageId,
         messages: newHistory.map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content })),
         provider: selectedProvider,
         model: isCustomSelectedModel ? customSelectedModel : selectedModel,
@@ -784,6 +766,7 @@ const Ask: React.FC<AskProps> = ({
       const requestBody: ChatCompletionRequest = {
         repo_url: getRepoUrl(repoInfo),
         type: repoInfo.type,
+        current_page_id: currentPageId,
         messages: newHistory.map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content })),
         provider: selectedProvider,
         model: isCustomSelectedModel ? customSelectedModel : selectedModel,

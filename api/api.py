@@ -3,9 +3,9 @@ import re
 import io
 import zipfile
 import logging
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, HTMLResponse
+from fastapi.responses import JSONResponse, Response, HTMLResponse, StreamingResponse
 from typing import List, Optional, Dict, Any, Literal
 import json
 from datetime import datetime
@@ -133,6 +133,29 @@ class WikiExportRequest(BaseModel):
     title: Optional[str] = Field(None, description="Wiki title (used for the Obsidian vault name/index)")
     version: Optional[int] = Field(None, description="Wiki release version being exported (informational)")
 
+class PageEditRequest(BaseModel):
+    """Model for saving a manually or AI-edited wiki page's content."""
+    repo: RepoInfo
+    language: str
+    page_id: str = Field(..., description="Id of the page in generated_pages to update")
+    content: str = Field(..., description="New markdown content for the page")
+    version: Optional[int] = Field(
+        None,
+        description="Release version to base the edit on (latest release if omitted)",
+    )
+
+class PageEditAIRequest(BaseModel):
+    """Model for requesting an AI-assisted rewrite of a wiki page. Streams the
+    proposed markdown back -- never persists anything itself."""
+    page_title: str
+    current_content: str
+    instruction: str = Field(..., description="What the user wants changed about the page")
+    provider: str = Field("google", description="Model provider (google, openai, openrouter, ollama, bedrock, azure, dashscope)")
+    model: Optional[str] = Field(None, description="Model name for the specified provider")
+    language: Optional[str] = Field("en", description="Language for the rewritten content")
+    api_key: Optional[str] = Field(None, description="Optional custom API key")
+    api_endpoint: Optional[str] = Field(None, description="Optional custom API endpoint")
+
 # --- Model Configuration Models ---
 class Model(BaseModel):
     """
@@ -161,6 +184,12 @@ class AuthorizationConfig(BaseModel):
     code: str = Field(..., description="Authorization code")
 
 from api.config import configs, WIKI_AUTH_MODE, WIKI_AUTH_CODE
+# Aliased: this module already defines its own route handler named
+# get_model_config() (GET /models/config, a completely different zero-arg
+# "list providers" endpoint) -- importing under the same name would shadow it.
+from api.config import get_model_config as get_provider_model_config
+from api.provider_streaming import stream_provider_response
+from api.prompts import PAGE_EDIT_AI_SYSTEM_PROMPT
 
 @app.get("/lang/config")
 async def get_lang_config():
@@ -984,6 +1013,90 @@ async def store_wiki_cache(request_data: WikiCacheRequest):
     else:
         raise HTTPException(status_code=500, detail="Failed to save wiki cache")
 
+@app.patch("/api/wiki_cache/page")
+async def edit_wiki_page(request_data: PageEditRequest):
+    """
+    Saves manually or AI-edited content for a single wiki page. Reuses
+    read_wiki_cache/save_wiki_cache as-is (same dedupe + versioning), so an
+    edit is just "load a release, replace one page's content, save as a new
+    release" -- it never touches the cache file format directly.
+    """
+    supported_langs = configs["lang_config"]["supported_languages"]
+    language = (
+        request_data.language
+        if supported_langs.__contains__(request_data.language)
+        else configs["lang_config"]["default"]
+    )
+
+    cached = await read_wiki_cache(
+        request_data.repo.owner,
+        request_data.repo.repo,
+        request_data.repo.type,
+        language,
+        version=request_data.version,
+    )
+    if cached is None:
+        raise HTTPException(status_code=404, detail="Wiki cache not found for this repository/language")
+    if request_data.page_id not in cached.generated_pages:
+        raise HTTPException(status_code=404, detail=f"Page '{request_data.page_id}' not found in this wiki release")
+
+    updated_pages = dict(cached.generated_pages)
+    updated_pages[request_data.page_id] = updated_pages[request_data.page_id].model_copy(
+        update={"content": request_data.content}
+    )
+
+    save_request = WikiCacheRequest(
+        repo=request_data.repo,
+        language=language,
+        wiki_structure=cached.wiki_structure,
+        generated_pages=updated_pages,
+        provider=cached.provider or "",
+        model=cached.model or "",
+        comprehensive=cached.comprehensive if cached.comprehensive is not None else True,
+        page_count=cached.page_count if cached.page_count is not None else len(cached.wiki_structure.pages),
+    )
+    new_version = await save_wiki_cache(save_request)
+    if new_version is None:
+        raise HTTPException(status_code=500, detail="Failed to save edited page")
+    return {"message": "Page updated successfully", "version": new_version, "page_id": request_data.page_id}
+
+@app.post("/api/wiki/page/edit/stream")
+async def edit_wiki_page_ai_stream(request_data: PageEditAIRequest):
+    """
+    Streams an AI-rewritten version of a single wiki page back to the
+    caller. Purely a proposal -- nothing is persisted here; the frontend
+    saves it (if the user accepts it) via PATCH /api/wiki_cache/page like
+    any manual edit.
+    """
+    language_code = request_data.language or configs["lang_config"]["default"]
+    supported_langs = configs["lang_config"]["supported_languages"]
+    language_name = supported_langs.get(language_code, "English")
+
+    prompt = PAGE_EDIT_AI_SYSTEM_PROMPT.format(
+        page_title=request_data.page_title,
+        current_content=request_data.current_content,
+        instruction=request_data.instruction,
+        language_name=language_name,
+    )
+    model_config = get_provider_model_config(request_data.provider, request_data.model)["model_kwargs"]
+
+    async def response_stream():
+        try:
+            async for text in stream_provider_response(
+                provider=request_data.provider,
+                requested_model=request_data.model,
+                prompt=prompt,
+                model_config_kwargs=model_config,
+                api_key=request_data.api_key,
+                api_endpoint=request_data.api_endpoint,
+            ):
+                yield text
+        except Exception as e:
+            logger.error(f"Error in page edit AI stream: {e}")
+            yield f"\nError: {str(e)}"
+
+    return StreamingResponse(response_stream(), media_type="text/event-stream")
+
 @app.delete("/api/wiki_cache")
 async def delete_wiki_cache(
     owner: str = Query(..., description="Repository owner"),
@@ -1292,6 +1405,31 @@ async def search_zim(zim_id: str, q: str = Query(..., min_length=1), limit: int 
     return zim_reader.search_entries(archive, q, limit=limit)
 
 
+@app.get("/api/zim/{zim_id}/index")
+async def get_zim_index(zim_id: str, limit: int = Query(500, ge=1, le=2000)):
+    """Browsable list of the archive's pages, shown below the search box
+    when the user isn't actively searching (see zim_reader.build_title_index)."""
+    entry = _get_zim_entry_or_404(zim_id)
+    archive = _open_zim_or_500(entry)
+    return zim_reader.build_title_index(archive, limit=limit)
+
+
+# ZIM content is arbitrary third-party HTML with its own CSS, rendered in an
+# iframe sandboxed WITHOUT allow-same-origin (see the reader page for why --
+# combining allow-scripts with allow-same-origin is a documented sandbox
+# bypass). Scripts are additionally left OUT of the sandbox entirely: real
+# .zim archives that ship a client-side app (seen firsthand: a Vue-based
+# DevDocs bundle) rely on browser capabilities an opaque-origin sandboxed
+# frame doesn't have (localStorage/sessionStorage throw instead of just
+# being empty, no IndexedDB, no same-origin fetch), and when that app's
+# startup code isn't defensive about it, it crashes mid-render -- which
+# looked like "the good static page flashes, then gets replaced by a
+# broken 'Loading...' panel that never resolves." Never executing the
+# archive's scripts means whatever HTML/CSS it shipped is what actually
+# stays on screen, for every .zim, not just the well-behaved ones. It also
+# means re-theming it to match the app's dark/light mode isn't possible
+# from here (no script access) -- each .zim keeps its own native look,
+# wrapped by our own chrome around it rather than reskinned.
 def _rewrite_zim_html(zim_id: str, entry_path: str, html_bytes: bytes) -> str:
     """Inject a <base> tag so an entry's own relative links/assets
     ("../../application.css", "../pagination/index") resolve against our raw

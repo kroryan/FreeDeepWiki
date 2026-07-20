@@ -151,7 +151,11 @@
     "relatedFiles": "Related Files:",
     "relatedPages": "Related Pages:",
     "selectPagePrompt": "Select a page from the navigation to view its content",
-    "askAboutRepo": "Ask questions about this repository"
+    "askAboutRepo": "Ask questions about this repository",
+    "editPage": "Edit",
+    "editInstructionPlaceholder": "Tell the AI what to change (optional)...",
+    "askAi": "Ask AI",
+    "save": "Save"
   },
   "nav": {
     "wikiProjects": "Wiki Projects"
