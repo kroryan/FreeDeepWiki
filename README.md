@@ -16,7 +16,6 @@
 
 It ships as a **single portable binary** — an AppImage on Linux, a `.exe` on Windows — with no Docker, no database, and no mandatory API key: it works out of the box against a local [Ollama](https://ollama.com) install, and can also talk to OpenAI, Google Gemini, Anthropic Claude, OpenRouter, AWS Bedrock, Azure OpenAI, Alibaba Dashscope, or any OpenAI-compatible endpoint (Novita, Together, Groq, vLLM, LM Studio, and similar).
 
-[English](./README.md) | [简体中文](./README.zh.md) | [繁體中文](./README.zh-tw.md) | [日本語](./README.ja.md) | [Español](./README.es.md) | [한국어](./README.kr.md) | [Tiếng Việt](./README.vi.md) | [Português Brasileiro](./README.pt-br.md) | [Français](./README.fr.md) | [Русский](./README.ru.md)
 
 ## Features
 
