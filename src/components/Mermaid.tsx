@@ -212,6 +212,14 @@ function forceMermaidReadable(root: HTMLElement | null) {
   const svg = root.querySelector('svg');
   if (!svg) return;
 
+  // 0. White canvas for the WHOLE diagram. Text outside boxes (sequence-diagram
+  //    message labels, arrow annotations, loop labels…) sits directly on the
+  //    page background, which is dark in dark mode — black text there was
+  //    unreadable. Painting the SVG itself white makes the single rule
+  //    "white background, black text" hold everywhere without having to decide
+  //    per-text which color it needs. Scoped to the diagram SVG only.
+  svg.style.backgroundColor = '#ffffff';
+
   // 1. Every SVG <text> element (sequence diagrams, actor names, state labels,
   //    axis text, etc.) -> black fill.
   svg.querySelectorAll('text').forEach((t) => {
@@ -219,12 +227,18 @@ function forceMermaidReadable(root: HTMLElement | null) {
     (t as SVGTextElement).style.fill = '#000000';
   });
 
-  // 2. Node and cluster shape fills -> white so black labels are legible on them.
+  // 2. Shape fills -> white so black labels are legible on them. Includes the
+  //    sequence-diagram boxes (.actor participant boxes, .note, .labelBox loop
+  //    headers, activation bars) which the dark theme otherwise paints dark.
   svg
     .querySelectorAll(
-      '.node rect, .node circle, .node ellipse, .node polygon, .node path, .cluster rect',
+      '.node rect, .node circle, .node ellipse, .node polygon, .node path, .cluster rect, ' +
+        'rect.actor, .actor, .note, .labelBox, .activation0, .activation1, .activation2',
     )
     .forEach((el) => {
+      // .actor matches both the participant <rect> and its <text> (text.actor);
+      // never paint text white — that is exactly the unreadable case.
+      if (el.tagName.toLowerCase() === 'text' || el.closest('text')) return;
       el.setAttribute('fill', '#ffffff');
       (el as SVGGraphicsElement).style.fill = '#ffffff';
     });

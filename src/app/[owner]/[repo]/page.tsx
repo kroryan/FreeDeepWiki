@@ -317,6 +317,14 @@ export default function RepoWikiPage() {
   // Create a flag to ensure the effect only runs once
   const effectRan = React.useRef(false);
 
+  // When the user clicks "Refresh Wiki", loadData must NOT restore the wiki
+  // from the server cache (with versioning the old release is no longer deleted,
+  // so the cache always hits). This flag makes the next loadData skip the cache
+  // and go straight to regeneration; the counter guarantees the effect re-runs
+  // even when no other dependency changed.
+  const forceFreshGeneration = useRef(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
   // Wiki Release versioning state. Each wiki generation/update is saved as a new
   // numbered release on the backend; the dropdown above the Refresh button lets
   // the user open any previous release instead of an update silently overwriting it.
@@ -1795,6 +1803,11 @@ IMPORTANT:
     // Reset cache loaded flag
     cacheLoadedSuccessfully.current = false;
     effectRan.current = false; // Allow the main data loading useEffect to run again
+    // Make the next loadData bypass the server cache (the old release still
+    // exists — versioned updates don't delete it) and bump the trigger so the
+    // effect re-runs even if no other dependency changed.
+    forceFreshGeneration.current = true;
+    setRefreshTrigger((t) => t + 1);
 
     // Reset all state
     setWikiStructure(undefined);
@@ -1828,6 +1841,17 @@ IMPORTANT:
       effectRan.current = true; // Set to true immediately to prevent re-entry due to StrictMode
 
       const loadData = async () => {
+        // A "Refresh Wiki" must regenerate, not restore. With versioning the
+        // previous release is never deleted, so the server cache always hits —
+        // without this skip, refresh would just reload the old wiki and bounce
+        // the user straight back.
+        if (forceFreshGeneration.current) {
+          forceFreshGeneration.current = false;
+          console.log('Refresh requested: skipping server cache, regenerating wiki.');
+          fetchRepositoryStructure();
+          return;
+        }
+
         // Try loading from server-side cache first
         setLoadingMessage(messages.loading?.fetchingCache || 'Checking for cached wiki...');
         try {
@@ -2032,7 +2056,7 @@ IMPORTANT:
 
     // Clean up function for this effect is not strictly necessary for loadData,
     // but keeping the main unmount cleanup in the other useEffect
-  }, [effectiveRepoInfo, effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, language, fetchRepositoryStructure, messages.loading?.fetchingCache, isComprehensiveView, pageCount]);
+  }, [effectiveRepoInfo, effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, language, fetchRepositoryStructure, messages.loading?.fetchingCache, isComprehensiveView, pageCount, refreshTrigger]);
 
   // Fetch the list of saved wiki releases for this repo/language so the Wiki
   // Release dropdown can show every version. Called on mount and after each
