@@ -1,41 +1,87 @@
-# FreeDeepWiki (Grok-Wiki)
+# FreeDeepWiki
 
-<img width="1536" height="1024" alt="grok-wiki" src="https://github.com/user-attachments/assets/1f569784-d1c8-479d-9a99-d3ef4ad3ec84" />
-
-**FreeDeepWiki** is my own implementation attempt of FreeDeepWiki, automatically creates beautiful, interactive wikis for any GitHub, GitLab, or BitBucket repository! Just enter a repo name, and FreeDeepWiki will:
+**FreeDeepWiki** turns any Git repository into an interactive, AI-generated wiki. Point it at a GitHub, GitLab, or Bitbucket repo (or a local folder) and it will:
 
 1. Analyze the code structure
-2. Generate comprehensive documentation
-3. Create visual diagrams to explain how everything works
-4. Organize it all into an easy-to-navigate wiki
+2. Generate structured documentation, page by page
+3. Draw Mermaid diagrams of how things fit together
+4. Let you chat with the repository (RAG-powered Q&A and multi-step Deep Research)
 
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/sheing)
-[![Tip in Crypto](https://tip.md/badge.svg)](https://tip.md/sng-asyncfunc)
-[![Twitter/X](https://img.shields.io/badge/Twitter-1DA1F2?style=for-the-badge&logo=twitter&logoColor=white)](https://x.com/sashimikun_void)
-[![Discord](https://img.shields.io/badge/Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/invite/VQMBGR8u5v)
+It ships as a **single portable binary** — an AppImage on Linux, a `.exe` on Windows — with no Docker, no database, and no mandatory API key: it works out of the box against a local [Ollama](https://ollama.com) install, and can also talk to OpenAI, Google Gemini, Anthropic Claude, OpenRouter, AWS Bedrock, Azure OpenAI, Alibaba Dashscope, or any OpenAI-compatible endpoint (Novita, Together, Groq, vLLM, LM Studio, and similar).
 
 [English](./README.md) | [简体中文](./README.zh.md) | [繁體中文](./README.zh-tw.md) | [日本語](./README.ja.md) | [Español](./README.es.md) | [한국어](./README.kr.md) | [Tiếng Việt](./README.vi.md) | [Português Brasileiro](./README.pt-br.md) | [Français](./README.fr.md) | [Русский](./README.ru.md)
 
-## Freedeepwiki-Open 2.0 (Grok Wiki is now live)
+## Features
 
-- **Download at** https://grok-wiki.com
+- **Automatic wiki generation** for any public or token-authenticated GitHub / GitLab / Bitbucket repository, or a local directory.
+- **Visual architecture diagrams** rendered with Mermaid, generated alongside the docs.
+- **Ask & Deep Research** — a chat panel grounded in the repo's own code (RAG over embeddings), plus a multi-iteration research mode for harder questions.
+- **Fully portable** — download one file, run it, done. No containers, no services to stand up, no `.env` to hand-edit before your first run.
+- **Local-first by default** — the packaged app auto-discovers a running Ollama instance and uses it for both generation and embeddings, so it works fully offline with zero API keys.
+- **Bring your own provider** when you want cloud-grade models: OpenAI, Google Gemini, Anthropic Claude (API key or a Pro/Max subscription token from `claude login`), OpenRouter, AWS Bedrock, Azure OpenAI, Alibaba Dashscope, or any OpenAI-compatible API (Novita, Together, Groq, vLLM, LM Studio, etc.) via the custom-endpoint option.
+- **Multi-language wiki output** with a language switcher in the UI.
 
+## Quick start — portable app (recommended)
 
+1. Grab the latest build from the [Releases page](https://github.com/kroryan/FreeDeepWiki/releases):
+   - **Linux** → `FreeDeepWiki-x86_64.AppImage`
+   - **Windows** → `FreeDeepWiki-windows-x64.exe`
+2. Make it executable and run it (Linux: `chmod +x FreeDeepWiki-x86_64.AppImage && ./FreeDeepWiki-x86_64.AppImage`; Windows: just double-click it).
+3. It starts its own local server, waits for it to come up, and opens your browser automatically at `http://127.0.0.1:<port>`.
+4. Paste a repository URL and generate your first wiki. If you have Ollama running locally, no further setup is needed — otherwise open the model settings panel and add an API key for the provider of your choice.
 
-https://github.com/user-attachments/assets/48d1e60a-eb91-4c05-a5a8-3624ffb79fb1
+Every push to `main` publishes an updated pre-release build; tagged commits (`vX.Y.Z`) publish a stable release. Both platforms are built and attached automatically by [`.github/workflows/release.yml`](.github/workflows/release.yml).
 
+## Configuring a provider
 
+Open the model/provider selector in the app and pick one of:
+
+| Provider | What you need |
+|---|---|
+| **Ollama** | Nothing — auto-detected at `http://localhost:11434` if running. |
+| **OpenAI** | An API key from the OpenAI platform dashboard. |
+| **Claude** | An Anthropic API key, **or** a Claude Pro/Max subscription token from `claude login` (Claude Code CLI) — both are sent straight to `api.anthropic.com` with the right auth headers. |
+| **Google Gemini** | A free API key from Google AI Studio. |
+| **OpenRouter / Bedrock / Azure / Dashscope** | Credentials for that provider, entered in the same settings panel. |
+| **Custom (OpenAI-compatible)** | Any OpenAI-compatible base URL (Novita, Together, Groq, vLLM, LM Studio, ...) plus its API key. Use the **Reload** button to fetch the model list from that endpoint. |
+
+## Running from source
+
+```bash
+# Frontend
+npm install
+npm run dev            # http://localhost:3000
+
+# Backend (separate terminal)
+cd api
+poetry install --only main
+poetry run python -m api.main   # http://localhost:8001
+```
+
+The frontend proxies API/WebSocket calls to `SERVER_BASE_URL` (defaults to `http://localhost:8001`).
+
+## Building the portable binaries yourself
+
+```bash
+npm run build
+python scripts/prepare_assets.py linux   # or "windows"
+pip install poetry pyinstaller
+poetry -C api install --only main
+pyinstaller freedeepwiki.spec
+```
+
+This bundles the built Next.js frontend, the FastAPI backend, and a Node.js runtime into a single PyInstaller binary (`scripts/launcher.py` is the entrypoint), which the Linux job then wraps into an AppImage.
 
 ## 🤝 Contributing
 
-Contributions are welcome! Feel free to:
+Contributions are welcome:
 - Open issues for bugs or feature requests
 - Submit pull requests to improve the code
-- Share your feedback and ideas
+- Share feedback and ideas
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License — see [LICENSE](LICENSE) for details.
 
 ## ⭐ Star History
 

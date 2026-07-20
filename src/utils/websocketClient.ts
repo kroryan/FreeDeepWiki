@@ -31,6 +31,8 @@ export interface ChatCompletionRequest {
   language?: string;
   excluded_dirs?: string;
   excluded_files?: string;
+  api_key?: string;
+  api_endpoint?: string;
 }
 
 /**

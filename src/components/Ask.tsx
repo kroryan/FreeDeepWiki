@@ -52,6 +52,32 @@ interface ChatSession {
   researchComplete: boolean;
 }
 
+// Reads custom provider credentials saved by UserSelector so the chat/Ask
+// WebSocket requests can authenticate the same way wiki generation does.
+const getSavedApiCredentials = (provider: string): { api_key?: string; api_endpoint?: string } => {
+  if (typeof window === 'undefined' || !provider) return {};
+  const result: { api_key?: string; api_endpoint?: string } = {};
+  try {
+    const savedKeys = localStorage.getItem('deepwiki_api_keys');
+    if (savedKeys) {
+      const parsedKeys = JSON.parse(savedKeys);
+      if (parsedKeys[provider]) {
+        result.api_key = parsedKeys[provider];
+      }
+    }
+    const savedEndpoints = localStorage.getItem('deepwiki_api_endpoints');
+    if (savedEndpoints) {
+      const parsedEndpoints = JSON.parse(savedEndpoints);
+      if (parsedEndpoints[provider]) {
+        result.api_endpoint = parsedEndpoints[provider];
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse saved api settings in getSavedApiCredentials', e);
+  }
+  return result;
+};
+
 interface AskProps {
   repoInfo: RepoInfo;
   provider?: string;
@@ -496,7 +522,8 @@ const Ask: React.FC<AskProps> = ({
         messages: newHistory.map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content })),
         provider: selectedProvider,
         model: isCustomSelectedModel ? customSelectedModel : selectedModel,
-        language: language
+        language: language,
+        ...getSavedApiCredentials(selectedProvider)
       };
 
       // Add tokens if available
@@ -760,7 +787,8 @@ const Ask: React.FC<AskProps> = ({
         messages: newHistory.map(msg => ({ role: msg.role as 'user' | 'assistant', content: msg.content })),
         provider: selectedProvider,
         model: isCustomSelectedModel ? customSelectedModel : selectedModel,
-        language: language
+        language: language,
+        ...getSavedApiCredentials(selectedProvider)
       };
 
       // Add tokens if available
@@ -976,7 +1004,7 @@ const Ask: React.FC<AskProps> = ({
           <div className="flex items-center mt-2 justify-between">
             <div className="group relative">
               <label className="flex items-center cursor-pointer">
-                <span className="text-xs text-gray-600 dark:text-gray-400 mr-2">Deep Research</span>
+                <span className="text-xs text-[var(--muted)] mr-2">Deep Research</span>
                 <div className="relative">
                   <input
                     type="checkbox"
@@ -984,13 +1012,13 @@ const Ask: React.FC<AskProps> = ({
                     onChange={() => setDeepResearch(!deepResearch)}
                     className="sr-only"
                   />
-                  <div className={`w-10 h-5 rounded-full transition-colors ${deepResearch ? 'bg-purple-600' : 'bg-gray-300 dark:bg-gray-600'}`}></div>
+                  <div className={`w-10 h-5 rounded-full transition-colors ${deepResearch ? 'bg-[var(--accent-primary)]' : 'bg-[var(--muted)]/30'}`}></div>
                   <div className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform transform ${deepResearch ? 'translate-x-5' : ''}`}></div>
                 </div>
               </label>
-              <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block bg-gray-800 text-white text-xs rounded p-2 w-72 z-10">
+              <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block bg-[var(--card-bg)] text-[var(--foreground)] border border-[var(--border-color)] text-xs rounded p-2 w-72 z-10 shadow-lg">
                 <div className="relative">
-                  <div className="absolute -bottom-2 left-4 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-800"></div>
+                  <div className="absolute -bottom-2 left-4 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-[var(--card-bg)]"></div>
                   <p className="mb-1">Deep Research conducts a multi-turn investigation process:</p>
                   <ul className="list-disc pl-4 text-xs">
                     <li><strong>Initial Research:</strong> Creates a research plan and initial findings</li>
@@ -1004,7 +1032,7 @@ const Ask: React.FC<AskProps> = ({
               </div>
             </div>
             {deepResearch && (
-              <div className="text-xs text-purple-600 dark:text-purple-400">
+              <div className="text-xs text-[var(--accent-primary)]">
                 Multi-turn research process enabled
                 {researchIteration > 0 && !researchComplete && ` (iteration ${researchIteration})`}
                 {researchComplete && ` (complete)`}
@@ -1015,10 +1043,10 @@ const Ask: React.FC<AskProps> = ({
 
         {/* Conversation transcript and response area */}
         {(conversationHistory.length > 0 || response) && (
-          <div className="border-t border-gray-200 dark:border-gray-700 mt-4">
+          <div className="border-t border-[var(--border-color)] mt-4">
             <div
               ref={responseRef}
-              className="p-4 max-h-[500px] overflow-y-auto space-y-4"
+              className="p-4 max-h-[45vh] overflow-y-auto space-y-4"
             >
               {conversationHistory.map((message, index) => {
                 if (message.content === '[DEEP RESEARCH] Continue the research') {
@@ -1040,33 +1068,33 @@ const Ask: React.FC<AskProps> = ({
             </div>
 
             {/* Research navigation and clear button */}
-            <div className="p-2 flex justify-between items-center border-t border-gray-200 dark:border-gray-700">
+            <div className="p-2 flex justify-between items-center border-t border-[var(--border-color)]">
               {/* Research navigation */}
               {deepResearch && researchStages.length > 1 && (
                 <div className="flex items-center space-x-2">
                   <button
                     onClick={() => navigateToPreviousStage()}
                     disabled={currentStageIndex === 0}
-                    className={`p-1 rounded-md ${currentStageIndex === 0 ? 'text-gray-400 dark:text-gray-600' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    className={`p-1 rounded-md ${currentStageIndex === 0 ? 'text-[var(--muted)]/40' : 'text-[var(--muted)] hover:bg-[var(--accent-primary)]/10 hover:text-[var(--accent-primary)]'}`}
                     aria-label="Previous stage"
                   >
                     <FaChevronLeft size={12} />
                   </button>
 
-                  <div className="text-xs text-gray-600 dark:text-gray-400">
+                  <div className="text-xs text-[var(--muted)]">
                     {currentStageIndex + 1} / {researchStages.length}
                   </div>
 
                   <button
                     onClick={() => navigateToNextStage()}
                     disabled={currentStageIndex === researchStages.length - 1}
-                    className={`p-1 rounded-md ${currentStageIndex === researchStages.length - 1 ? 'text-gray-400 dark:text-gray-600' : 'text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'}`}
+                    className={`p-1 rounded-md ${currentStageIndex === researchStages.length - 1 ? 'text-[var(--muted)]/40' : 'text-[var(--muted)] hover:bg-[var(--accent-primary)]/10 hover:text-[var(--accent-primary)]'}`}
                     aria-label="Next stage"
                   >
                     <FaChevronRight size={12} />
                   </button>
 
-                  <div className="text-xs text-gray-600 dark:text-gray-400 ml-2">
+                  <div className="text-xs text-[var(--muted)] ml-2">
                     {researchStages[currentStageIndex]?.title || `Stage ${currentStageIndex + 1}`}
                   </div>
                 </div>
@@ -1076,7 +1104,7 @@ const Ask: React.FC<AskProps> = ({
               {/* Download button */}
               <button
                 onClick={downloadresponse}
-                className="text-xs text-gray-500 dark:text-gray-400 hover:text-green-600 dark:hover:text-green-400 px-2 py-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700 flex items-center gap-1"
+                className="text-xs text-[var(--muted)] hover:text-[var(--highlight)] px-2 py-1 rounded-md hover:bg-[var(--accent-primary)]/10 flex items-center gap-1"
                 title="Download response as markdown file"
               >
                 <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1089,7 +1117,7 @@ const Ask: React.FC<AskProps> = ({
               <button
                 id="ask-clear-conversation"
                 onClick={clearConversation}
-                className="text-xs text-gray-500 dark:text-gray-400 hover:text-purple-600 dark:hover:text-purple-400 px-2 py-1 rounded-md hover:bg-gray-200 dark:hover:bg-gray-700"
+                className="text-xs text-[var(--muted)] hover:text-[var(--accent-primary)] px-2 py-1 rounded-md hover:bg-[var(--accent-primary)]/10"
               >
                 Clear conversation
               </button>
@@ -1100,14 +1128,14 @@ const Ask: React.FC<AskProps> = ({
 
         {/* Loading indicator */}
         {isLoading && !response && (
-          <div className="p-4 border-t border-gray-200 dark:border-gray-700">
+          <div className="p-4 border-t border-[var(--border-color)]">
             <div className="flex items-center space-x-2">
               <div className="animate-pulse flex space-x-1">
-                <div className="h-2 w-2 bg-purple-600 rounded-full"></div>
-                <div className="h-2 w-2 bg-purple-600 rounded-full"></div>
-                <div className="h-2 w-2 bg-purple-600 rounded-full"></div>
+                <div className="h-2 w-2 bg-[var(--accent-primary)] rounded-full"></div>
+                <div className="h-2 w-2 bg-[var(--accent-primary)] rounded-full"></div>
+                <div className="h-2 w-2 bg-[var(--accent-primary)] rounded-full"></div>
               </div>
-              <span className="text-xs text-gray-500 dark:text-gray-400">
+              <span className="text-xs text-[var(--muted)]">
                 {deepResearch
                   ? (researchIteration === 0
                     ? "Planning research approach..."
@@ -1116,7 +1144,7 @@ const Ask: React.FC<AskProps> = ({
               </span>
             </div>
             {deepResearch && (
-              <div className="mt-2 text-xs text-gray-500 dark:text-gray-400 pl-5">
+              <div className="mt-2 text-xs text-[var(--muted)] pl-5">
                 <div className="flex flex-col space-y-1">
                   {researchIteration === 0 && (
                     <>
@@ -1149,7 +1177,7 @@ const Ask: React.FC<AskProps> = ({
                         <span>Investigating remaining questions...</span>
                       </div>
                       <div className="flex items-center">
-                        <div className="w-2 h-2 bg-purple-500 rounded-full mr-2"></div>
+                        <div className="w-2 h-2 bg-[var(--accent-primary)] rounded-full mr-2"></div>
                         <span>Connecting findings from previous iterations...</span>
                       </div>
                     </>
@@ -1181,7 +1209,7 @@ const Ask: React.FC<AskProps> = ({
                   {researchIteration >= 5 && (
                     <>
                       <div className="flex items-center">
-                        <div className="w-2 h-2 bg-purple-500 rounded-full mr-2"></div>
+                        <div className="w-2 h-2 bg-[var(--accent-primary)] rounded-full mr-2"></div>
                         <span>Finalizing comprehensive answer...</span>
                       </div>
                       <div className="flex items-center">

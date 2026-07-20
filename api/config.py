@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 from api.openai_client import OpenAIClient
 from api.litellm_client import LiteLLMClient
 from api.openrouter_client import OpenRouterClient
+from api.anthropic_client import AnthropicClient
 from api.bedrock_client import BedrockClient
 from api.google_embedder_client import GoogleEmbedderClient
 from api.azureai_client import AzureAIClient
@@ -65,6 +66,7 @@ CLIENT_CLASSES = {
     "OpenAIClient": OpenAIClient,
     "LiteLLMClient" : LiteLLMClient,
     "OpenRouterClient": OpenRouterClient,
+    "AnthropicClient": AnthropicClient,
     "OllamaClient": OllamaClient,
     "BedrockClient": BedrockClient,
     "AzureAIClient": AzureAIClient,
@@ -143,13 +145,14 @@ def load_generator_config():
                     "openai_custom": OpenAIClient,
                     "litellm": LiteLLMClient,
                     "openrouter": OpenRouterClient,
+                    "claude": AnthropicClient,
                     "ollama": OllamaClient,
                     "bedrock": BedrockClient,
                     "azure": AzureAIClient,
                     "dashscope": DashscopeClient
                 }
-                # Fallback to OpenAIClient for custom/unknown OpenAI-compatible, or LiteLLM for Claude if Anthropic isn't explicitly defined
-                provider_config["model_client"] = default_map.get(provider_id, LiteLLMClient)
+                # Fallback to OpenAIClient for custom/unknown OpenAI-compatible providers
+                provider_config["model_client"] = default_map.get(provider_id, OpenAIClient)
             else:
                 logger.warning(f"Unknown provider or client class: {provider_id}")
 
@@ -405,8 +408,8 @@ def get_model_config(provider="google", model=None):
                 "models": {}
             },
             "claude": {
-                "model_client": LiteLLMClient,
-                "default_model": "claude-3-7-sonnet-latest",
+                "model_client": AnthropicClient,
+                "default_model": "claude-sonnet-4-5",
                 "supportsCustomModel": True,
                 "models": {}
             },

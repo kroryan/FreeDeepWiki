@@ -9,7 +9,11 @@ package-mode = false
 
 [tool.poetry.dependencies]
 python = "^3.11"
-fastapi = ">=0.95.0"
+# Upper-bounded: newer FastAPI/Starlette releases have removed
+# `FastAPI.add_websocket_route` (used to register /ws/chat), so an
+# unconstrained range can silently break the chat/wiki-generation feature
+# whenever the lock file is regenerated.
+fastapi = ">=0.95.0,<0.120.0"
 uvicorn = { extras = ["standard"], version = ">=0.21.1" }
 pydantic = ">=2.0.0"
 google-generativeai = ">=0.3.0"

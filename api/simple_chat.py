@@ -12,13 +12,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from api.config import get_model_config, configs, OPENROUTER_API_KEY, OPENAI_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+from api.config import get_model_config, configs, OPENROUTER_API_KEY, OPENAI_API_KEY, LITELLM_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 from api.data_pipeline import count_tokens, get_file_content
 from api.openai_client import OpenAIClient
 from api.openrouter_client import OpenRouterClient
 from api.bedrock_client import BedrockClient
 from api.azureai_client import AzureAIClient
 from api.dashscope_client import DashscopeClient
+from api.litellm_client import LiteLLMClient
+from api.anthropic_client import AnthropicClient
 from api.rag import RAG
 from api.prompts import (
     DEEP_RESEARCH_FIRST_ITERATION_PROMPT,
@@ -76,6 +78,8 @@ class ChatCompletionRequest(BaseModel):
     excluded_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to exclude from processing")
     included_dirs: Optional[str] = Field(None, description="Comma-separated list of directories to include exclusively")
     included_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to include exclusively")
+    api_key: Optional[str] = Field(None, description="Optional custom API key")
+    api_endpoint: Optional[str] = Field(None, description="Optional custom API endpoint")
 
 @app.post("/chat/completions/stream")
 async def chat_completions_stream(request: ChatCompletionRequest):
@@ -92,20 +96,14 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                     logger.warning(f"Request exceeds recommended token limit ({tokens} > 7500)")
                     input_too_large = True
 
-        # Inject custom provider credentials into environment so that fallback embedders
-        # (like OpenAIClient) can successfully initialize when using custom UI settings.
-        if request.api_key:
-            if request.provider in ("openai_custom", "openai", "litellm", "openrouter"):
-                if "OPENAI_API_KEY" not in os.environ:
-                    os.environ["OPENAI_API_KEY"] = request.api_key
-                if request.api_endpoint and "OPENAI_BASE_URL" not in os.environ:
-                    os.environ["OPENAI_BASE_URL"] = request.api_endpoint
-            elif request.provider == "claude" and "ANTHROPIC_API_KEY" not in os.environ:
-                os.environ["ANTHROPIC_API_KEY"] = request.api_key
-
         # Create a new RAG instance for this request
         try:
-            request_rag = RAG(provider=request.provider, model=request.model)
+            request_rag = RAG(
+                provider=request.provider,
+                model=request.model,
+                api_key=request.api_key,
+                api_endpoint=request.api_endpoint
+            )
 
             # Extract custom file filter parameters if provided
             excluded_dirs = None
@@ -386,16 +384,65 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                 model_kwargs=model_kwargs,
                 model_type=ModelType.LLM
             )
-        elif request.provider == "openai":
+        elif request.provider in ("openai", "openai_custom"):
             logger.info(f"Using Openai protocol with model: {request.model}")
 
             # Check if an API key is set for Openai
-            if not OPENAI_API_KEY:
-                logger.warning("OPENAI_API_KEY not configured, but continuing with request")
+            if not OPENAI_API_KEY and not request.api_key:
+                logger.warning("API key not configured, but continuing with request")
                 # We'll let the OpenAIClient handle this and return an error message
 
-            # Initialize Openai client
-            model = OpenAIClient()
+            # Initialize Openai client, forwarding any custom key/endpoint
+            client_kwargs = {}
+            if request.api_key:
+                client_kwargs['api_key'] = request.api_key
+            if request.api_endpoint:
+                client_kwargs['base_url'] = request.api_endpoint
+
+            model = OpenAIClient(**client_kwargs)
+            model_kwargs = {
+                "model": request.model,
+                "stream": True,
+                "temperature": model_config["temperature"]
+            }
+            # Only add top_p if it exists in the model config
+            if "top_p" in model_config:
+                model_kwargs["top_p"] = model_config["top_p"]
+
+            api_kwargs = model.convert_inputs_to_api_kwargs(
+                input=prompt,
+                model_kwargs=model_kwargs,
+                model_type=ModelType.LLM
+            )
+        elif request.provider == "claude":
+            logger.info(f"Using native Anthropic API with model: {request.model}")
+
+            if not request.api_key:
+                logger.warning("Anthropic API key/subscription token not configured, but continuing with request")
+
+            model = AnthropicClient(api_key=request.api_key, base_url=request.api_endpoint)
+            model_kwargs = {
+                "model": request.model,
+                "temperature": model_config["temperature"],
+                "max_tokens": 8192,
+            }
+
+            api_kwargs = model.convert_inputs_to_api_kwargs(
+                input=prompt,
+                model_kwargs=model_kwargs,
+                model_type=ModelType.LLM
+            )
+        elif request.provider == "litellm":
+            logger.info(f"Using Openai protocol with model on LiteLLM for provider: {request.provider}")
+
+            if not LITELLM_API_KEY and not request.api_key:
+                logger.warning("API key not configured, but continuing with request")
+
+            client_kwargs = {}
+            if request.api_key:
+                client_kwargs['api_key'] = request.api_key
+
+            model = LiteLLMClient(**client_kwargs)
             model_kwargs = {
                 "model": request.model,
                 "stream": True,
@@ -465,6 +512,9 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                 model_type=ModelType.LLM,
             )
         else:
+            # Configure API key for Google GenAI if a custom one was provided
+            if request.api_key:
+                genai.configure(api_key=request.api_key)
             # Initialize Google Generative AI model (default provider)
             model = genai.GenerativeModel(
                 model_name=model_config["model"],
@@ -505,7 +555,7 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                     except Exception as e_openrouter:
                         logger.error(f"Error with OpenRouter API: {str(e_openrouter)}")
                         yield f"\nError with OpenRouter API: {str(e_openrouter)}\n\nPlease check that you have set the OPENROUTER_API_KEY environment variable with a valid API key."
-                elif request.provider == "openai":
+                elif request.provider in ("openai", "openai_custom"):
                     try:
                         # Get the response and handle it properly using the previously created api_kwargs
                         logger.info("Making Openai API call")
@@ -521,7 +571,32 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                                         yield text
                     except Exception as e_openai:
                         logger.error(f"Error with Openai API: {str(e_openai)}")
-                        yield f"\nError with Openai API: {str(e_openai)}\n\nPlease check that you have set the OPENAI_API_KEY environment variable with a valid API key."
+                        yield f"\nError with Openai API: {str(e_openai)}\n\nPlease check that you have set a valid API key for this provider."
+                elif request.provider == "claude":
+                    try:
+                        logger.info("Making Anthropic API call")
+                        response = await model.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+                        async for chunk in response:
+                            if chunk:
+                                yield chunk
+                    except Exception as e_claude:
+                        logger.error(f"Error with Anthropic API: {str(e_claude)}")
+                        yield f"\nError with Anthropic API: {str(e_claude)}\n\nPlease check that you have set a valid API key or subscription token for Claude."
+                elif request.provider == "litellm":
+                    try:
+                        logger.info("Making LiteLLM API call")
+                        response = await model.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+                        async for chunk in response:
+                            choices = getattr(chunk, "choices", [])
+                            if len(choices) > 0:
+                                delta = getattr(choices[0], "delta", None)
+                                if delta is not None:
+                                    text = getattr(delta, "content", None)
+                                    if text is not None:
+                                        yield text
+                    except Exception as e_litellm:
+                        logger.error(f"Error with LiteLLM API: {str(e_litellm)}")
+                        yield f"\nError with LiteLLM API: {str(e_litellm)}\n\nPlease check that you have set a valid API key for this provider."
                 elif request.provider == "bedrock":
                     try:
                         # Get the response and handle it properly using the previously created api_kwargs
@@ -644,7 +719,7 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                             except Exception as e_fallback:
                                 logger.error(f"Error with OpenRouter API fallback: {str(e_fallback)}")
                                 yield f"\nError with OpenRouter API fallback: {str(e_fallback)}\n\nPlease check that you have set the OPENROUTER_API_KEY environment variable with a valid API key."
-                        elif request.provider == "openai":
+                        elif request.provider in ("openai", "openai_custom"):
                             try:
                                 # Create new api_kwargs with the simplified prompt
                                 fallback_api_kwargs = model.convert_inputs_to_api_kwargs(
@@ -659,11 +734,53 @@ async def chat_completions_stream(request: ChatCompletionRequest):
 
                                 # Handle streaming fallback_response from Openai
                                 async for chunk in fallback_response:
-                                    text = chunk if isinstance(chunk, str) else getattr(chunk, 'text', str(chunk))
-                                    yield text
+                                    choices = getattr(chunk, "choices", [])
+                                    if len(choices) > 0:
+                                        delta = getattr(choices[0], "delta", None)
+                                        if delta is not None:
+                                            text = getattr(delta, "content", None)
+                                            if text is not None:
+                                                yield text
                             except Exception as e_fallback:
                                 logger.error(f"Error with Openai API fallback: {str(e_fallback)}")
-                                yield f"\nError with Openai API fallback: {str(e_fallback)}\n\nPlease check that you have set the OPENAI_API_KEY environment variable with a valid API key."
+                                yield f"\nError with Openai API fallback: {str(e_fallback)}\n\nPlease check that you have set a valid API key for this provider."
+                        elif request.provider == "claude":
+                            try:
+                                fallback_api_kwargs = model.convert_inputs_to_api_kwargs(
+                                    input=simplified_prompt,
+                                    model_kwargs=model_kwargs,
+                                    model_type=ModelType.LLM
+                                )
+                                logger.info("Making fallback Anthropic API call")
+                                fallback_response = await model.acall(api_kwargs=fallback_api_kwargs, model_type=ModelType.LLM)
+                                async for chunk in fallback_response:
+                                    if chunk:
+                                        yield chunk
+                            except Exception as e_fallback:
+                                logger.error(f"Error with Anthropic API fallback: {str(e_fallback)}")
+                                yield f"\nError with Anthropic API fallback: {str(e_fallback)}\n\nPlease check that you have set a valid API key or subscription token for Claude."
+                        elif request.provider == "litellm":
+                            try:
+                                fallback_api_kwargs = model.convert_inputs_to_api_kwargs(
+                                    input=simplified_prompt,
+                                    model_kwargs=model_kwargs,
+                                    model_type=ModelType.LLM
+                                )
+
+                                logger.info("Making fallback LiteLLM API call")
+                                fallback_response = await model.acall(api_kwargs=fallback_api_kwargs, model_type=ModelType.LLM)
+
+                                async for chunk in fallback_response:
+                                    choices = getattr(chunk, "choices", [])
+                                    if len(choices) > 0:
+                                        delta = getattr(choices[0], "delta", None)
+                                        if delta is not None:
+                                            text = getattr(delta, "content", None)
+                                            if text is not None:
+                                                yield text
+                            except Exception as e_fallback:
+                                logger.error(f"Error with LiteLLM API fallback: {str(e_fallback)}")
+                                yield f"\nError with LiteLLM API fallback: {str(e_fallback)}\n\nPlease check that you have set a valid API key for this provider."
                         elif request.provider == "bedrock":
                             try:
                                 # Create new api_kwargs with the simplified prompt
@@ -741,6 +858,8 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                                 )
                         else:
                             # Google Generative AI fallback (default provider)
+                            if request.api_key:
+                                genai.configure(api_key=request.api_key)
                             model_config = get_model_config(request.provider, request.model)
                             fallback_model = genai.GenerativeModel(
                                 model_name=model_config["model_kwargs"]["model"],

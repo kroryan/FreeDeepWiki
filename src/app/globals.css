@@ -14,7 +14,9 @@
   --accent-secondary: #06b6d4;
   --border-color:     rgba(79, 70, 229, 0.2);
   --sidebar-bg:       rgba(248, 250, 252, 0.92);
-  --content-bg:       rgba(255, 255, 255, 0.88);
+  --content-bg:       rgba(255, 255, 255, 0.97);
+  --card-bg:          rgba(255, 255, 255, 0.98);
+  --input-bg:         rgba(241, 245, 249, 0.9);
   --highlight:        #f43f5e;
   --muted:            #64748b;
   --link-color:       #4338ca;
@@ -29,7 +31,9 @@ html[data-theme='dark'] {
   --accent-secondary: #ff007f;
   --border-color:     rgba(0, 240, 255, 0.15);
   --sidebar-bg:       rgba(9, 13, 22, 0.92);
-  --content-bg:       rgba(9, 13, 22, 0.75);
+  --content-bg:       rgba(6, 9, 16, 0.96);
+  --card-bg:          rgba(7, 11, 20, 0.97);
+  --input-bg:         rgba(255, 255, 255, 0.05);
   --highlight:        #00ff66;
   --muted:            #64748b;
   --link-color:       #38bdf8;
@@ -76,6 +80,9 @@ body {
 }
 
 /* ── CRT scanline overlay ────────────────────────────────────────────────── */
+/* Kept subtle on purpose: it sits above all page content (including the
+   wiki text), so a strong opacity here degrades reading comfort during
+   long-form documentation. Chrome/accents get the neon treatment instead. */
 body::after {
   content: "";
   display: block;
@@ -87,7 +94,7 @@ body::after {
   background-size: 100% 3px, 4px 100%;
   z-index: 9000;
   pointer-events: none;
-  opacity: 0.35;
+  opacity: 0.12;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

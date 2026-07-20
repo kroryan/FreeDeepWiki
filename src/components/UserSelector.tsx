@@ -437,8 +437,8 @@ next.config.js
           <div className="p-3 bg-[var(--background)]/30 border border-[var(--border-color)]/50 rounded-md">
             <h4 className="text-xs font-semibold text-[var(--foreground)] mb-2 flex justify-between items-center">
               <span>{t.form?.connectionSettings || 'Connection Settings'}</span>
-              {(provider === 'openai' || provider === 'claude' || provider === 'google') && (
-                <span className="text-[10px] text-[var(--muted)] border border-[var(--border-color)] px-1.5 py-0.5 rounded cursor-help" title="Use your subscription login via CLI or get API Keys from the respective console">
+              {provider === 'claude' && (
+                <span className="text-[10px] text-[var(--muted)] border border-[var(--border-color)] px-1.5 py-0.5 rounded cursor-help" title="Claude Pro/Max session tokens from `claude login` are sent directly to api.anthropic.com with the required OAuth headers.">
                   Subscription Login Supported
                 </span>
               )}
@@ -491,17 +491,17 @@ next.config.js
             {/* Subscription Helper Text */}
             {provider === 'openai' && (
               <div className="text-[10px] text-[var(--muted)] leading-tight mt-2 p-2 bg-[var(--accent-primary)]/5 rounded">
-                <strong>ChatGPT Plus/Pro Subscription:</strong> Install the OpenAI Codex CLI <code>npm i -g @openai/codex</code>, run <code>codex login</code> in your terminal, and paste the generated access token above.
+                <strong>Recommended:</strong> Use a standard API key from the OpenAI Platform dashboard. ChatGPT Plus/Pro subscription tokens from the Codex CLI (<code>codex login</code>) authenticate against a different, undocumented backend and will <strong>not</strong> work against the standard API this app calls — don&apos;t rely on that path.
               </div>
             )}
             {provider === 'claude' && (
               <div className="text-[10px] text-[var(--muted)] leading-tight mt-2 p-2 bg-[var(--accent-primary)]/5 rounded">
-                <strong>Claude Pro Subscription:</strong> Install Claude Code CLI <code>npm i -g @anthropic-ai/claude-code</code>, run <code>claude login</code>, and paste your session token above, OR use an API key from the Anthropic Console.
+                <strong>Claude Pro/Max Subscription:</strong> Install Claude Code CLI <code>npm i -g @anthropic-ai/claude-code</code>, run <code>claude login</code>, and paste your access token above &mdash; it&apos;s sent directly to Anthropic&apos;s API with the OAuth headers it expects. An API key from the Anthropic Console also works.
               </div>
             )}
             {provider === 'google' && (
               <div className="text-[10px] text-[var(--muted)] leading-tight mt-2 p-2 bg-[var(--accent-primary)]/5 rounded">
-                <strong>Gemini Advanced Subscription:</strong> Install Google Antigravity CLI <code>npm i -g @google/agy</code>, run <code>agy auth login</code>, and paste your access token above, OR generate a free API key from Google AI Studio.
+                <strong>Recommended:</strong> Use a free Google API key from Google AI Studio. Antigravity CLI session tokens authenticate against a different, undocumented backend and are <strong>not</strong> confirmed to work with the public Gemini API this app calls.
               </div>
             )}
             {provider === 'openai_custom' && (
@@ -533,7 +533,7 @@ next.config.js
                   onChange={() => {}}
                   className="sr-only"
                 />
-                <div className={`w-10 h-5 rounded-full transition-colors ${isCustomModel ? 'bg-[var(--accent-primary)]' : 'bg-gray-300 dark:bg-gray-600'}`}></div>
+                <div className={`w-10 h-5 rounded-full transition-colors ${isCustomModel ? 'bg-[var(--accent-primary)]' : 'bg-[var(--muted)]/30'}`}></div>
                 <div className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform transform ${isCustomModel ? 'translate-x-5' : ''}`}></div>
               </div>
               <label

@@ -1,6 +1,14 @@
 import type { NextConfig } from "next";
 
-const TARGET_SERVER_BASE_URL = process.env.SERVER_BASE_URL || 'http://localhost:8001';
+// NOTE: Do not proxy to the backend via `rewrites()` here. Next.js resolves
+// rewrite destinations (including any env var interpolated into them) once
+// at `next build` time and bakes the result into the standalone output's
+// routes manifest — it is NOT re-evaluated when the packaged app later picks
+// a different SERVER_BASE_URL/port at runtime (the portable AppImage/.exe
+// auto-selects a free backend port, which is rarely the build-time default).
+// Every backend-proxied path is instead a real Route Handler under
+// src/app/**/route.ts, which reads process.env.SERVER_BASE_URL at request
+// time in the running server process, so it tracks the actual runtime port.
 
 const nextConfig: NextConfig = {
   /* config options here */
@@ -20,38 +28,6 @@ const nextConfig: NextConfig = {
     // Keep Next.js' own splitChunks configuration. Overriding it causes CSS
     // chunks to be emitted as JavaScript dependencies in Next 15.
     return config;
-  },
-  async rewrites() {
-    return [
-      {
-        source: '/api/wiki_cache/:path*',
-        destination: `${TARGET_SERVER_BASE_URL}/api/wiki_cache/:path*`,
-      },
-      {
-        source: '/export/wiki/:path*',
-        destination: `${TARGET_SERVER_BASE_URL}/export/wiki/:path*`,
-      },
-      {
-        source: '/api/wiki_cache',
-        destination: `${TARGET_SERVER_BASE_URL}/api/wiki_cache`,
-      },
-      {
-        source: '/local_repo/structure',
-        destination: `${TARGET_SERVER_BASE_URL}/local_repo/structure`,
-      },
-      {
-        source: '/api/auth/status',
-        destination: `${TARGET_SERVER_BASE_URL}/auth/status`,
-      },
-      {
-        source: '/api/auth/validate',
-        destination: `${TARGET_SERVER_BASE_URL}/auth/validate`,
-      },
-      {
-        source: '/api/lang/config',
-        destination: `${TARGET_SERVER_BASE_URL}/lang/config`,
-      },
-    ];
   },
 };
 

@@ -151,7 +151,7 @@ class RAG(adal.Component):
     """RAG with one repo.
     If you want to load a new repos, call prepare_retriever(repo_url_or_path) first."""
 
-    def __init__(self, provider="google", model=None, use_s3: bool = False):  # noqa: F841 - use_s3 is kept for compatibility
+    def __init__(self, provider="google", model=None, use_s3: bool = False, api_key: str = None, api_endpoint: str = None):
         """
         Initialize the RAG component.
 
@@ -159,11 +159,15 @@ class RAG(adal.Component):
             provider: Model provider to use (google, openai, openrouter, ollama)
             model: Model name to use with the provider
             use_s3: Whether to use S3 for database storage (default: False)
+            api_key: Optional API key for custom providers
+            api_endpoint: Optional API endpoint for custom providers
         """
         super().__init__()
 
         self.provider = provider
         self.model = model
+        self.api_key = api_key
+        self.api_endpoint = api_endpoint
 
         # Import the helper functions
         from api.config import get_embedder_config, get_embedder_type
@@ -228,6 +232,21 @@ IMPORTANT FORMATTING RULES:
         from api.config import get_model_config
         generator_config = get_model_config(self.provider, self.model)
 
+        # Forward any custom API key/endpoint directly to the model client's
+        # constructor (OpenAIClient/LiteLLMClient both accept these) instead of
+        # mutating process-wide env vars, which would race with other concurrent
+        # requests and wouldn't be seen by clients that lazily init an async
+        # client after construction.
+        model_client_class = generator_config["model_client"]
+        client_kwargs = {}
+        if self.api_key:
+            if self.provider in ("openai_custom", "openai"):
+                client_kwargs["api_key"] = self.api_key
+                if self.api_endpoint:
+                    client_kwargs["base_url"] = self.api_endpoint
+            elif self.provider in ("litellm", "claude"):
+                client_kwargs["api_key"] = self.api_key
+
         # Set up the main generator
         self.generator = adal.Generator(
             template=RAG_TEMPLATE,
@@ -237,7 +256,7 @@ IMPORTANT FORMATTING RULES:
                 "system_prompt": system_prompt,
                 "contexts": None,
             },
-            model_client=generator_config["model_client"](),
+            model_client=model_client_class(**client_kwargs),
             model_kwargs=generator_config["model_kwargs"],
             output_processors=data_parser,
         )

@@ -23,6 +23,7 @@ from api.bedrock_client import BedrockClient
 from api.openai_client import OpenAIClient
 from api.litellm_client import LiteLLMClient
 from api.openrouter_client import OpenRouterClient
+from api.anthropic_client import AnthropicClient
 from api.azureai_client import AzureAIClient
 from api.dashscope_client import DashscopeClient
 from api.rag import RAG
@@ -91,20 +92,14 @@ async def handle_websocket_chat(websocket: WebSocket):
                     logger.warning(f"Request exceeds recommended token limit ({tokens} > 7500)")
                     input_too_large = True
 
-        # Inject custom provider credentials into environment so that fallback embedders
-        # (like OpenAIClient) can successfully initialize when using custom UI settings.
-        if request.api_key:
-            if request.provider in ("openai_custom", "openai", "litellm", "openrouter"):
-                if "OPENAI_API_KEY" not in os.environ:
-                    os.environ["OPENAI_API_KEY"] = request.api_key
-                if request.api_endpoint and "OPENAI_BASE_URL" not in os.environ:
-                    os.environ["OPENAI_BASE_URL"] = request.api_endpoint
-            elif request.provider == "claude" and "ANTHROPIC_API_KEY" not in os.environ:
-                os.environ["ANTHROPIC_API_KEY"] = request.api_key
-
         # Create a new RAG instance for this request
         try:
-            request_rag = RAG(provider=request.provider, model=request.model)
+            request_rag = RAG(
+                provider=request.provider,
+                model=request.model,
+                api_key=request.api_key,
+                api_endpoint=request.api_endpoint
+            )
 
             # Extract custom file filter parameters if provided
             excluded_dirs = None
@@ -530,7 +525,25 @@ This file contains...
                 model_kwargs=model_kwargs,
                 model_type=ModelType.LLM
             )
-        elif request.provider in ("litellm", "claude"):
+        elif request.provider == "claude":
+            logger.info(f"Using native Anthropic API with model: {request.model}")
+
+            if not request.api_key:
+                logger.warning("Anthropic API key/subscription token not configured, but continuing with request")
+
+            model = AnthropicClient(api_key=request.api_key, base_url=request.api_endpoint)
+            model_kwargs = {
+                "model": request.model,
+                "temperature": model_config.get("temperature", 0.7),
+                "max_tokens": 8192,
+            }
+
+            api_kwargs = model.convert_inputs_to_api_kwargs(
+                input=prompt,
+                model_kwargs=model_kwargs,
+                model_type=ModelType.LLM
+            )
+        elif request.provider == "litellm":
             logger.info(f"Using Openai protocol with model on LiteLLM for provider: {request.provider}")
 
             # Check if an API key is set
@@ -541,10 +554,7 @@ This file contains...
             client_kwargs = {}
             if request.api_key:
                 client_kwargs['api_key'] = request.api_key
-                # LiteLLM routes to underlying providers which need their own env vars
-                if request.provider == "claude":
-                    os.environ["ANTHROPIC_API_KEY"] = request.api_key
-            
+
             model = LiteLLMClient(**client_kwargs)
             model_kwargs = {
                 "model": request.model,
@@ -698,7 +708,20 @@ This file contains...
                     await websocket.send_text(error_msg)
                     # Close the WebSocket connection after sending the error message
                     await websocket.close()
-            elif request.provider in ("litellm", "claude"):
+            elif request.provider == "claude":
+                try:
+                    logger.info("Making Anthropic API call")
+                    response = await model.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
+                    async for chunk in response:
+                        if chunk:
+                            await websocket.send_text(chunk)
+                    await websocket.close()
+                except Exception as e_claude:
+                    logger.error(f"Error with Anthropic API: {str(e_claude)}")
+                    error_msg = f"\nError with Anthropic API: {str(e_claude)}\n\nPlease check that you have set a valid API key or subscription token for Claude."
+                    await websocket.send_text(error_msg)
+                    await websocket.close()
+            elif request.provider == "litellm":
                 try:
                     # Get the response and handle it properly using the previously created api_kwargs
                     logger.info("Making LiteLLM API call")
@@ -873,7 +896,23 @@ This file contains...
                             logger.error(f"Error with Openai API fallback: {str(e_fallback)}")
                             error_msg = f"\nError with Openai API fallback: {str(e_fallback)}\n\nPlease check that you have set the OPENAI_API_KEY environment variable with a valid API key."
                             await websocket.send_text(error_msg)
-                    elif request.provider in ("litellm", "claude"):
+                    elif request.provider == "claude":
+                        try:
+                            fallback_api_kwargs = model.convert_inputs_to_api_kwargs(
+                                input=simplified_prompt,
+                                model_kwargs=model_kwargs,
+                                model_type=ModelType.LLM
+                            )
+                            logger.info("Making fallback Anthropic API call")
+                            fallback_response = await model.acall(api_kwargs=fallback_api_kwargs, model_type=ModelType.LLM)
+                            async for chunk in fallback_response:
+                                if chunk:
+                                    await websocket.send_text(chunk)
+                        except Exception as e_fallback:
+                            logger.error(f"Error with Anthropic API fallback: {str(e_fallback)}")
+                            error_msg = f"\nError with Anthropic API fallback: {str(e_fallback)}\n\nPlease check that you have set a valid API key or subscription token for Claude."
+                            await websocket.send_text(error_msg)
+                    elif request.provider == "litellm":
                         try:
                             # Create new api_kwargs with the simplified prompt
                             fallback_api_kwargs = model.convert_inputs_to_api_kwargs(

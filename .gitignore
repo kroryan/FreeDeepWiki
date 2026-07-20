@@ -79,3 +79,4 @@ certs/
 /*.AppImage
 /appimagetool*
 
+/.venv311/
