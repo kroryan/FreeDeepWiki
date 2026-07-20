@@ -107,6 +107,9 @@
   },
   "repoPage": {
     "refreshWiki": "Обновить Wiki",
+    "wikiRelease": "Версия Wiki",
+    "deleteRelease": "Удалить выбранную версию",
+    "confirmDeleteRelease": "Удалить версию wiki v{version}? Это действие нельзя отменить.",
     "confirmRefresh": "Подтвердить обновление",
     "cancel": "Отмена",
     "home": "Главная",

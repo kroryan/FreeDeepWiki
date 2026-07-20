@@ -98,6 +98,9 @@
   },
   "repoPage": {
     "refreshWiki": "Làm mới Wiki",
+    "wikiRelease": "Phiên bản Wiki",
+    "deleteRelease": "Xóa phiên bản đã chọn",
+    "confirmDeleteRelease": "Xóa phiên bản wiki v{version}? Hành động này không thể hoàn tác.",
     "confirmRefresh": "Xác nhận làm mới",
     "cancel": "Hủy bỏ",
     "home": "Trang chủ",

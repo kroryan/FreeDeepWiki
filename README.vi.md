@@ -9,9 +9,6 @@
 3. Tạo sơ đồ trực quan để giải thích cách mọi thứ hoạt động
 4. Sắp xếp tất cả documents thành một wiki dễ hiểu
 
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/sheing)
-
-[![Twitter/X](https://img.shields.io/badge/Twitter-1DA1F2?style=for-the-badge&logo=twitter&logoColor=white)](https://x.com/sashimikun_void)
 [![Discord](https://img.shields.io/badge/Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white)](https://discord.com/invite/VQMBGR8u5v)
 
 [English](./README.md) | [简体中文](./README.zh.md) | [繁體中文](./README.zh-tw.md) | [日本語](./README.ja.md) | [Español](./README.es.md) | [한국어](./README.kr.md) | [Tiếng Việt](./README.vi.md) | [Português Brasileiro](./README.pt-br.md) | [Français](./README.fr.md) | [Русский](./README.ru.md)
@@ -219,7 +216,6 @@ docker run -p 8001:8001 -p 3000:3000 \
 
 #### Bạn có thể Building the Docker image trên máy cục bộ
 
-
 ```bash
 # Clone repository
 git clone https://github.com/kroryan/freedeepwiki.git
@@ -322,7 +318,6 @@ FreeDeepWiki hiện đã hỗ trợ [OpenRouter](https://openrouter.ai/) làm nh
 - **Tiết kiệm chi phí**: Lựa chọn mô hình phù hợp với ngân sách và nhu cầu hiệu suất của bạn
 - **Chuyển đổi dễ dàng**: Chuyển đổi giữa các mô hình khác nhau mà không cần thay đổi mã nguồn
 
-
 ### Cách sử dụng OpenRouter với FreeDeepWiki
 
 1. **Lấy API Key**: Đăng ký tại [OpenRouter](https://openrouter.ai/) và lấy khóa API
@@ -330,14 +325,12 @@ FreeDeepWiki hiện đã hỗ trợ [OpenRouter](https://openrouter.ai/) làm nh
 3. **Bật trong giao diện**: Chọn "Use OpenRouter API" trên trang chủ
 4. **Chọn mô hình**: Lựa chọn từ các mô hình phổ biến như GPT-4o, Claude 3.5 Sonnet, Gemini 2.0 và nhiều hơn nữa
 
-
 OpenRouter đặc biệt hữu ích nếu bạn muốn:
 
 - Thử nhiều mô hình khác nhau mà không cần đăng ký nhiều dịch vụ
 - Truy cập các mô hình có thể bị giới hạn tại khu vực của bạn
 - So sánh hiệu năng giữa các nhà cung cấp mô hình khác nhau
 - Tối ưu hóa chi phí so với hiệu suất dựa trên nhu cầu của bạn
-
 
 ## 🤖 Tính năng Hỏi & Nghiên cứu Sâu (DeepResearch)
 
@@ -349,7 +342,6 @@ Tính năng Hỏi cho phép bạn trò chuyện với kho mã của mình bằng
 - **Ứng dụng RAG**: Hệ thống truy xuất các đoạn mã liên quan để tạo ra câu trả lời có cơ sở
 - **Phản hồi theo thởi gian thực**: Xem câu trả lời được tạo ra trực tiếp, mang lại trải nghiệm tương tác hơn
 - **Lưu lịch sử cuộc trò chuyện**: Hệ thống duy trì ngữ cảnh giữa các câu hỏi để cuộc đối thoại liền mạch hơn
-
 
 ### Tính năng DeepResearch
 
@@ -365,7 +357,6 @@ DeepResearch nâng tầm phân tích kho mã với quy trình nghiện cứu nhi
 
 Để sử dụng DeepResearch, chỉ cần bật công tắc "Deep Research" trong giao diện Hỏi (Ask) trước khi gửi câu hỏi của bạn.
 
-
 ## 📱 Ảnh chụp màng hình
 
 ![Giao diện chính của FreeDeepWiki](screenshots/Interface.png)
@@ -380,8 +371,6 @@ DeepResearch nâng tầm phân tích kho mã với quy trình nghiện cứu nhi
 ### Demo Video
 
 [![FreeDeepWiki Demo Video](https://img.youtube.com/vi/zGANs8US8B4/0.jpg)](https://youtu.be/zGANs8US8B4)
-
-
 
 ## ❓ Khắc phục sự cố
 
@@ -404,7 +393,6 @@ DeepResearch nâng tầm phân tích kho mã với quy trình nghiện cứu nhi
 1. **Khởi động lại cả hai máy chủ**: Đôi khi, một lần khởi động lại đơn giản có thể giải quyết hầu hết các vấn đề
 2. **Kiểm tra nhật ký trình duyệt**: Mở công cụ phát triển của trình duyệt để xem các lỗi JavaScript
 3. **Kiểm tra nhật ký API**: Xem các lỗi Python trong terminal nơi API đang chạy
-
 
 ## 🤝 Đóng góp
 

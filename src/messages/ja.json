@@ -98,6 +98,9 @@
   },
   "repoPage": {
     "refreshWiki": "Wikiを更新",
+    "wikiRelease": "Wiki リリース",
+    "deleteRelease": "選択したリリースを削除",
+    "confirmDeleteRelease": "Wiki リリース v{version} を削除しますか？この操作は元に戻せません。",
     "confirmRefresh": "更新を確認",
     "cancel": "キャンセル",
     "home": "ホーム",

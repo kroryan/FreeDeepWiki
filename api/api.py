@@ -99,6 +99,11 @@ class WikiCacheData(BaseModel):
     model: Optional[str] = None
     comprehensive: Optional[bool] = None
     page_count: Optional[int] = None
+    # Monotonically increasing release version for this repo/language/type.
+    # v1 = first generation, v2 = first update, v3 = second update, ... so an
+    # update never overwrites the previous wiki. Legacy caches without a version
+    # are treated as v0.
+    version: Optional[int] = None
 
 class WikiCacheRequest(BaseModel):
     """
@@ -112,6 +117,7 @@ class WikiCacheRequest(BaseModel):
     model: str
     comprehensive: bool = True
     page_count: int = Field(default=10, ge=1, le=50)
+    version: Optional[int] = None
 
 class WikiExportRequest(BaseModel):
     """
@@ -529,6 +535,20 @@ app.add_websocket_route("/ws/chat", handle_websocket_chat)
 WIKI_CACHE_DIR = os.path.join(get_adalflow_default_root_path(), "wikicache")
 os.makedirs(WIKI_CACHE_DIR, exist_ok=True)
 
+def _repo_cache_prefix(repo_type: str, owner: str, repo: str, language: str) -> str:
+    """Filename prefix shared by every release of one repo/language/type."""
+    return f"freedeepwiki_cache_{repo_type}_{owner}_{repo}_{language}"
+
+
+def _parse_cache_version(filename: str) -> int:
+    """Extract the ``_vN`` release version from a cache filename.
+
+    Returns 0 for legacy caches that predate versioning (no ``_vN`` suffix).
+    """
+    m = re.search(r"_v(\d+)\.json$", filename)
+    return int(m.group(1)) if m else 0
+
+
 def get_wiki_cache_path(
     owner: str,
     repo: str,
@@ -536,16 +556,47 @@ def get_wiki_cache_path(
     language: str,
     comprehensive: Optional[bool] = None,
     page_count: Optional[int] = None,
+    version: Optional[int] = None,
 ) -> str:
-    """Generates the file path for a given wiki cache."""
+    """Generates the file path for a given wiki cache.
+
+    When ``version`` is provided the filename carries a ``_v{version}`` suffix so
+    each release is stored as its own file and an update never overwrites the
+    previous wiki.
+    """
     variant = ""
     if comprehensive is not None and page_count is not None:
         mode = "comprehensive" if comprehensive else "concise"
         variant = f"_{mode}_{page_count}"
+    version_suffix = f"_v{version}" if version is not None else ""
     filename = (
-        f"freedeepwiki_cache_{repo_type}_{owner}_{repo}_{language}{variant}.json"
+        f"freedeepwiki_cache_{repo_type}_{owner}_{repo}_{language}{variant}{version_suffix}.json"
     )
     return os.path.join(WIKI_CACHE_DIR, filename)
+
+
+def _list_repo_cache_files(repo_type: str, owner: str, repo: str, language: str) -> List[str]:
+    """Return absolute paths of every cache file for one repo/language/type."""
+    prefix = _repo_cache_prefix(repo_type, owner, repo, language)
+    try:
+        return [
+            os.path.join(WIKI_CACHE_DIR, fn)
+            for fn in os.listdir(WIKI_CACHE_DIR)
+            if fn.startswith(prefix) and fn.endswith(".json")
+        ]
+    except Exception as e:
+        logger.error(f"Error listing cache files for {prefix}: {e}")
+        return []
+
+
+def _next_cache_version(repo_type: str, owner: str, repo: str, language: str) -> int:
+    """Next release version number = max existing version + 1 (min 1)."""
+    files = _list_repo_cache_files(repo_type, owner, repo, language)
+    max_version = 0
+    for path in files:
+        max_version = max(max_version, _parse_cache_version(os.path.basename(path)))
+    return max_version + 1
+
 
 async def read_wiki_cache(
     owner: str,
@@ -554,86 +605,88 @@ async def read_wiki_cache(
     language: str,
     comprehensive: Optional[bool] = None,
     page_count: Optional[int] = None,
+    version: Optional[int] = None,
 ) -> Optional[WikiCacheData]:
-    """Reads wiki cache data from the file system."""
-    cache_paths = [
-        get_wiki_cache_path(
-            owner,
-            repo,
-            repo_type,
-            language,
-            comprehensive,
-            page_count,
-        )
-    ]
-    if comprehensive is not None and page_count is not None:
-        # Backward compatibility for caches created before variants existed.
-        cache_paths.append(
-            get_wiki_cache_path(owner, repo, repo_type, language)
-        )
+    """Reads wiki cache data from the file system.
 
-    for cache_path in dict.fromkeys(cache_paths):
-        if not os.path.exists(cache_path):
-            continue
+    If ``version`` is given, returns that specific release. Otherwise returns the
+    latest release (highest ``_vN``; legacy files count as v0, ties broken by
+    mtime). An optional ``comprehensive``/``page_count`` preference is honored
+    when choosing among same-version variants, but the latest release is always
+    preferred over an older exact-variant match so re-entering a wiki restores
+    the most recent update instead of regenerating.
+    """
+    def _load(path: str) -> Optional[WikiCacheData]:
         try:
-            with open(cache_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                cached = WikiCacheData(**data)
-                if page_count is not None:
-                    actual_page_count = len(cached.wiki_structure.pages)
-                    if actual_page_count != page_count:
-                        logger.info(
-                            "Ignoring cache variant with %s pages; %s requested",
-                            actual_page_count,
-                            page_count,
-                        )
-                        continue
-                if (
-                    comprehensive is not None
-                    and cached.comprehensive is not None
-                    and cached.comprehensive != comprehensive
-                ):
-                    continue
-                return cached
+            with open(path, 'r', encoding='utf-8') as f:
+                return WikiCacheData(**json.load(f))
         except Exception as e:
-            logger.error(f"Error reading wiki cache from {cache_path}: {e}")
+            logger.error(f"Error reading wiki cache from {path}: {e}")
+            return None
+
+    # Specific release requested -> find the file with that exact version.
+    if version is not None:
+        files = _list_repo_cache_files(repo_type, owner, repo, language)
+        exact = [p for p in files if _parse_cache_version(os.path.basename(p)) == version]
+        if exact:
+            exact.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+            for cache_path in exact:
+                cached = _load(cache_path)
+                if cached:
+                    logger.info(f"Loaded wiki release v{version} from {os.path.basename(cache_path)}")
+                    return cached
+        logger.info(f"Wiki release v{version} not found for {owner}/{repo}")
+        return None
+
+    # No version specified -> pick the latest release.
+    files = _list_repo_cache_files(repo_type, owner, repo, language)
+    if not files:
+        return None
+
+    # Sort by version desc, then mtime desc, so the newest release wins.
+    files.sort(
+        key=lambda p: (_parse_cache_version(os.path.basename(p)), os.path.getmtime(p)),
+        reverse=True,
+    )
+
+    # Prefer the latest release whose variant matches the request, but fall back
+    # to the latest release regardless of variant.
+    def _matches_variant(cached: WikiCacheData) -> bool:
+        if page_count is not None and len(cached.wiki_structure.pages) != page_count:
+            return False
+        if comprehensive is not None and cached.comprehensive is not None and cached.comprehensive != comprehensive:
+            return False
+        return True
+
+    fallback = None
+    for cache_path in files:
+        cached = _load(cache_path)
+        if not cached:
             continue
+        if fallback is None:
+            fallback = cached
+        if _matches_variant(cached):
+            logger.info(f"Using wiki release v{cached.version or 0} from {os.path.basename(cache_path)}")
+            return cached
 
-    # Fallback: no exact variant (page_count/comprehensive) match was found, but a wiki for
-    # this owner/repo/lang/type may still exist under a different variant. Re-entering a
-    # previously generated wiki without the exact `pages`/`comprehensive` query params would
-    # otherwise miss the cache and silently regenerate (surfacing as "No valid XML found in
-    # response" when the regeneration fails). Return the most recently modified matching
-    # cache so the existing wiki is restored instead of being regenerated from scratch.
-    try:
-        prefix = f"freedeepwiki_cache_{repo_type}_{owner}_{repo}_{language}"
-        candidates = [
-            os.path.join(WIKI_CACHE_DIR, fn)
-            for fn in os.listdir(WIKI_CACHE_DIR)
-            if fn.startswith(prefix) and fn.endswith(".json")
-        ]
-        if candidates:
-            candidates.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-            for cache_path in candidates:
-                try:
-                    with open(cache_path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        cached = WikiCacheData(**data)
-                        logger.info(
-                            "No exact cache variant match; falling back to %s",
-                            os.path.basename(cache_path),
-                        )
-                        return cached
-                except Exception as e:
-                    logger.error(f"Error reading fallback cache {cache_path}: {e}")
-                    continue
-    except Exception as e:
-        logger.error(f"Error scanning wiki cache dir for fallback: {e}")
-
+    if fallback:
+        logger.info(
+            "No exact cache variant match; falling back to %s",
+            os.path.basename(files[0]),
+        )
+        return fallback
     return None
 
-async def save_wiki_cache(data: WikiCacheRequest) -> bool:
-    """Saves wiki cache data to the file system."""
+async def save_wiki_cache(data: WikiCacheRequest) -> Optional[int]:
+    """Saves wiki cache data to the file system as a NEW versioned release.
+
+    Each save creates a fresh ``_v{N}`` file (N = max existing version + 1) so an
+    update never overwrites the previous wiki. Returns the assigned version, or
+    None on failure.
+    """
+    next_version = _next_cache_version(
+        data.repo.type, data.repo.owner, data.repo.repo, data.language
+    )
     cache_path = get_wiki_cache_path(
         data.repo.owner,
         data.repo.repo,
@@ -641,8 +694,9 @@ async def save_wiki_cache(data: WikiCacheRequest) -> bool:
         data.language,
         data.comprehensive,
         data.page_count,
+        version=next_version,
     )
-    logger.info(f"Attempting to save wiki cache. Path: {cache_path}")
+    logger.info(f"Attempting to save wiki cache as release v{next_version}. Path: {cache_path}")
     try:
         payload = WikiCacheData(
             wiki_structure=data.wiki_structure,
@@ -652,6 +706,7 @@ async def save_wiki_cache(data: WikiCacheRequest) -> bool:
             model=data.model,
             comprehensive=data.comprehensive,
             page_count=data.page_count,
+            version=next_version,
         )
         # Log size of data to be cached for debugging (avoid logging full content if large)
         try:
@@ -665,14 +720,14 @@ async def save_wiki_cache(data: WikiCacheRequest) -> bool:
         logger.info(f"Writing cache file to: {cache_path}")
         with open(cache_path, 'w', encoding='utf-8') as f:
             json.dump(payload.model_dump(), f, indent=2)
-        logger.info(f"Wiki cache successfully saved to {cache_path}")
-        return True
+        logger.info(f"Wiki cache successfully saved to {cache_path} (release v{next_version})")
+        return next_version
     except IOError as e:
         logger.error(f"IOError saving wiki cache to {cache_path}: {e.strerror} (errno: {e.errno})", exc_info=True)
-        return False
+        return None
     except Exception as e:
         logger.error(f"Unexpected error saving wiki cache to {cache_path}: {e}", exc_info=True)
-        return False
+        return None
 
 # --- Wiki Cache API Endpoints ---
 
@@ -692,6 +747,11 @@ async def get_cached_wiki(
         le=50,
         description="Requested number of wiki pages",
     ),
+    version: Optional[int] = Query(
+        None,
+        ge=0,
+        description="Specific wiki release version to load (latest if omitted)",
+    ),
 ):
     """
     Retrieves cached wiki data (structure and generated pages) for a repository.
@@ -701,7 +761,7 @@ async def get_cached_wiki(
     if not supported_langs.__contains__(language):
         language = configs["lang_config"]["default"]
 
-    logger.info(f"Attempting to retrieve wiki cache for {owner}/{repo} ({repo_type}), lang: {language}")
+    logger.info(f"Attempting to retrieve wiki cache for {owner}/{repo} ({repo_type}), lang: {language}, version: {version}")
     cached_data = await read_wiki_cache(
         owner,
         repo,
@@ -709,19 +769,64 @@ async def get_cached_wiki(
         language,
         comprehensive,
         page_count,
+        version,
     )
     if cached_data:
         return cached_data
     else:
         # Return 200 with null body if not found, as frontend expects this behavior
-        # Or, raise HTTPException(status_code=404, detail="Wiki cache not found") if preferred
         logger.info(f"Wiki cache not found for {owner}/{repo} ({repo_type}), lang: {language}")
         return None
+
+@app.get("/api/wiki_cache/releases")
+async def list_wiki_releases(
+    owner: str = Query(..., description="Repository owner"),
+    repo: str = Query(..., description="Repository name"),
+    repo_type: str = Query(..., description="Repository type (e.g., github, gitlab)"),
+    language: str = Query(..., description="Language of the wiki content"),
+):
+    """
+    Lists every saved release (version) of a repository's wiki, newest first.
+    Used by the frontend's "Wiki Release" dropdown to let the user read any
+    previously generated version instead of an update silently overwriting it.
+    """
+    supported_langs = configs["lang_config"]["supported_languages"]
+    if not supported_langs.__contains__(language):
+        language = configs["lang_config"]["default"]
+
+    files = _list_repo_cache_files(repo_type, owner, repo, language)
+    releases = []
+    for path in files:
+        filename = os.path.basename(path)
+        version = _parse_cache_version(filename)
+        try:
+            mtime = os.path.getmtime(path)
+            with open(path, "r", encoding="utf-8") as f:
+                cached = WikiCacheData(**json.load(f))
+            releases.append({
+                "version": version,
+                "created_at": int(mtime * 1000),
+                "comprehensive": cached.comprehensive,
+                "page_count": len(cached.wiki_structure.pages),
+                "provider": cached.provider,
+                "model": cached.model,
+                "title": cached.wiki_structure.title,
+                "id": filename,
+            })
+        except Exception as e:
+            logger.warning(f"Could not read release metadata from {filename}: {e}")
+            continue
+
+    # Newest release first (version desc, then mtime desc).
+    releases.sort(key=lambda r: (r["version"], r["created_at"]), reverse=True)
+    return {"releases": releases, "latest": releases[0]["version"] if releases else None}
 
 @app.post("/api/wiki_cache")
 async def store_wiki_cache(request_data: WikiCacheRequest):
     """
-    Stores generated wiki data (structure and pages) to the server-side cache.
+    Stores generated wiki data (structure and pages) to the server-side cache as
+    a new versioned release. Returns the assigned version so the frontend can
+    select it in the Wiki Release dropdown.
     """
     # Language validation
     supported_langs = configs["lang_config"]["supported_languages"]
@@ -730,9 +835,9 @@ async def store_wiki_cache(request_data: WikiCacheRequest):
         request_data.language = configs["lang_config"]["default"]
 
     logger.info(f"Attempting to save wiki cache for {request_data.repo.owner}/{request_data.repo.repo} ({request_data.repo.type}), lang: {request_data.language}")
-    success = await save_wiki_cache(request_data)
-    if success:
-        return {"message": "Wiki cache saved successfully"}
+    version = await save_wiki_cache(request_data)
+    if version is not None:
+        return {"message": "Wiki cache saved successfully", "version": version}
     else:
         raise HTTPException(status_code=500, detail="Failed to save wiki cache")
 
@@ -745,9 +850,18 @@ async def delete_wiki_cache(
     authorization_code: Optional[str] = Query(None, description="Authorization code"),
     comprehensive: Optional[bool] = Query(None),
     page_count: Optional[int] = Query(None, ge=1, le=50),
+    version: Optional[int] = Query(
+        None,
+        ge=0,
+        description="Delete only this release version. If omitted, deletes all releases.",
+    ),
 ):
     """
-    Deletes a specific wiki cache from the file system.
+    Deletes wiki cache file(s) from the file system.
+
+    With versioning, an update no longer deletes — it creates a new release. An
+    explicit delete targets either a single release (``version`` given) or every
+    release of the repo/language/type (``version`` omitted).
     """
     # Language validation
     supported_langs = configs["lang_config"]["supported_languages"]
@@ -759,46 +873,22 @@ async def delete_wiki_cache(
         if not authorization_code or WIKI_AUTH_CODE != authorization_code:
             raise HTTPException(status_code=401, detail="Authorization code is invalid")
 
-    logger.info(f"Attempting to delete wiki cache for {owner}/{repo} ({repo_type}), lang: {language}")
-    if comprehensive is not None and page_count is not None:
-        cache_paths = [
-            get_wiki_cache_path(
-                owner,
-                repo,
-                repo_type,
-                language,
-                comprehensive,
-                page_count,
-            )
-        ]
-        # A pre-variant cache may still be the selected wiki. Delete it only
-        # when its shape matches; refreshing another variant must not erase it.
-        legacy_path = get_wiki_cache_path(owner, repo, repo_type, language)
-        if os.path.exists(legacy_path):
-            try:
-                with open(legacy_path, "r", encoding="utf-8") as legacy_file:
-                    legacy_data = WikiCacheData(**json.load(legacy_file))
-                legacy_count = len(legacy_data.wiki_structure.pages)
-                legacy_mode_matches = (
-                    legacy_data.comprehensive is None
-                    or legacy_data.comprehensive == comprehensive
-                )
-                if legacy_count == page_count and legacy_mode_matches:
-                    cache_paths.append(legacy_path)
-            except Exception as legacy_error:
-                logger.warning(
-                    "Could not inspect legacy cache %s before deletion: %s",
-                    legacy_path,
-                    legacy_error,
-                )
-    else:
-        prefix = f"freedeepwiki_cache_{repo_type}_{owner}_{repo}_{language}"
-        cache_paths = [
-            os.path.join(WIKI_CACHE_DIR, filename)
-            for filename in os.listdir(WIKI_CACHE_DIR)
-            if filename == f"{prefix}.json"
-            or (filename.startswith(f"{prefix}_") and filename.endswith(".json"))
-        ]
+    logger.info(f"Attempting to delete wiki cache for {owner}/{repo} ({repo_type}), lang: {language}, version: {version}")
+
+    prefix = _repo_cache_prefix(repo_type, owner, repo, language)
+    cache_paths = []
+    try:
+        for filename in os.listdir(WIKI_CACHE_DIR):
+            if not filename.endswith(".json"):
+                continue
+            if not (filename == f"{prefix}.json" or filename.startswith(f"{prefix}_")):
+                continue
+            if version is not None and _parse_cache_version(filename) != version:
+                continue
+            cache_paths.append(os.path.join(WIKI_CACHE_DIR, filename))
+    except Exception as e:
+        logger.error(f"Error scanning cache dir for deletion: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to scan wiki cache: {str(e)}")
 
     deleted_paths = []
     try:
@@ -888,6 +978,10 @@ async def get_processed_projects():
                 try:
                     stats = await asyncio.to_thread(os.stat, file_path) # Use asyncio.to_thread for os.stat
                     cache_name = filename.replace("freedeepwiki_cache_", "").replace(".json", "")
+                    # Strip the release version suffix (_vN) and the variant suffix
+                    # (_comprehensive_N / _concise_N) so the remaining
+                    # repo_type_owner_repo_language splits cleanly into parts.
+                    cache_name = re.sub(r"_v\d+$", "", cache_name)
                     cache_name = re.sub(
                         r"_(?:comprehensive|concise)_\d+$",
                         "",

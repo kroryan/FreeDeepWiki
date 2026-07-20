@@ -98,6 +98,9 @@
   },
   "repoPage": {
     "refreshWiki": "刷新Wiki",
+    "wikiRelease": "Wiki 版本",
+    "deleteRelease": "删除所选版本",
+    "confirmDeleteRelease": "删除 wiki 版本 v{version}？此操作无法撤销。",
     "confirmRefresh": "确认刷新",
     "cancel": "取消",
     "home": "首页",

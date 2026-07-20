@@ -98,6 +98,9 @@
     },
     "repoPage": {
       "refreshWiki": "위키 새로고침",
+      "wikiRelease": "위키 릴리스",
+      "deleteRelease": "선택한 릴리스 삭제",
+      "confirmDeleteRelease": "위키 릴리스 v{version}을(를) 삭제하시겠습니까? 되돌릴 수 없습니다.",
       "confirmRefresh": "새로고침 확인",
       "cancel": "취소",
       "home": "홈",

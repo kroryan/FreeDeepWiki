@@ -132,6 +132,9 @@
   },
   "repoPage": {
     "refreshWiki": "Refresh Wiki",
+    "wikiRelease": "Wiki Release",
+    "deleteRelease": "Delete selected release",
+    "confirmDeleteRelease": "Delete wiki release v{version}? This cannot be undone.",
     "confirmRefresh": "Confirm Refresh",
     "cancel": "Cancel",
     "home": "Home",

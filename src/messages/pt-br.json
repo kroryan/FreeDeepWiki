@@ -107,6 +107,9 @@
   },
   "repoPage": {
     "refreshWiki": "Atualizar Wiki",
+    "wikiRelease": "Versão da Wiki",
+    "deleteRelease": "Excluir versão selecionada",
+    "confirmDeleteRelease": "Excluir a versão v{version} da wiki? Esta ação não pode ser desfeita.",
     "confirmRefresh": "Confirmar Atualização",
     "cancel": "Cancelar",
     "home": "Início",

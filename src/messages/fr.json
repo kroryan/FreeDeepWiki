@@ -107,6 +107,9 @@
     },
     "repoPage": {
       "refreshWiki": "Rafraîchir le Wiki",
+      "wikiRelease": "Version du Wiki",
+      "deleteRelease": "Supprimer la version sélectionnée",
+      "confirmDeleteRelease": "Supprimer la version v{version} du wiki ? Cette action est irréversible.",
       "confirmRefresh": "Confirmer le rafraîchissement",
       "cancel": "Annuler",
       "home": "Accueil",

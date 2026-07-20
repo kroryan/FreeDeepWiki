@@ -15,7 +15,7 @@ import { normalizeWikiPageCount } from '@/utils/wikiPageCount';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FaBitbucket, FaBookOpen, FaComments, FaDownload, FaExclamationTriangle, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHome, FaSync, FaTimes } from 'react-icons/fa';
+import { FaBitbucket, FaBookOpen, FaComments, FaDownload, FaExclamationTriangle, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHistory, FaHome, FaSync, FaTimes, FaTrash } from 'react-icons/fa';
 // Define the WikiSection and WikiStructure types directly in this file
 // since the imported types don't have the sections and rootSections properties
 interface WikiSection {
@@ -44,6 +44,19 @@ interface WikiStructure {
   pages: WikiPage[];
   sections: WikiSection[];
   rootSections: string[];
+}
+
+// One saved release (version) of a repository's wiki, returned by the backend's
+// /api/wiki_cache/releases endpoint. Used to populate the "Wiki Release" dropdown.
+interface WikiRelease {
+  version: number;
+  created_at: number;
+  comprehensive: boolean | null;
+  page_count: number;
+  provider: string | null;
+  model: string | null;
+  title: string | null;
+  id: string;
 }
 
 // Add CSS styles for wiki with Japanese aesthetic
@@ -303,6 +316,12 @@ export default function RepoWikiPage() {
 
   // Create a flag to ensure the effect only runs once
   const effectRan = React.useRef(false);
+
+  // Wiki Release versioning state. Each wiki generation/update is saved as a new
+  // numbered release on the backend; the dropdown above the Refresh button lets
+  // the user open any previous release instead of an update silently overwriting it.
+  const [wikiReleases, setWikiReleases] = useState<WikiRelease[]>([]);
+  const [selectedWikiVersion, setSelectedWikiVersion] = useState<number | null>(null);
 
   // State for Ask modal
   const [isAskModalOpen, setIsAskModalOpen] = useState(false);
@@ -1713,70 +1732,18 @@ IMPORTANT:
     const refreshExcludedFiles = selection?.excludedFiles ?? modelExcludedFiles;
 
     setShowModelOptions(false);
-    setLoadingMessage(messages.loading?.clearingCache || 'Clearing server cache...');
+    // With wiki versioning, an update no longer deletes the previous wiki — it
+    // generates a new release (a new _vN file) so the old version stays available
+    // in the Wiki Release dropdown. We only regenerate here; the save step assigns
+    // the next version number on the backend.
+    setLoadingMessage(messages.loading?.initializing || 'Initializing wiki generation...');
     setIsLoading(true); // Show loading indicator immediately
 
-    try {
-      const params = new URLSearchParams({
-        owner: effectiveRepoInfo.owner,
-        repo: effectiveRepoInfo.repo,
-        repo_type: effectiveRepoInfo.type,
-        language: language,
-        provider: refreshProvider,
-        model: refreshModel,
-        is_custom_model: refreshIsCustomModel.toString(),
-        custom_model: refreshCustomModel,
-        comprehensive: refreshComprehensive.toString(),
-        page_count: refreshPageCount.toString(),
-        authorization_code: authCode,
-      });
-
-      // Add file filters configuration
-      if (refreshExcludedDirs) {
-        params.append('excluded_dirs', refreshExcludedDirs);
-      }
-      if (refreshExcludedFiles) {
-        params.append('excluded_files', refreshExcludedFiles);
-      }
-
-      if(authRequired && !authCode) {
-        setIsLoading(false);
-        console.error("Authorization code is required");
-        setError('Authorization code is required');
-        return;
-      }
-
-      const response = await fetch(`/api/wiki_cache?${params.toString()}`, {
-        method: 'DELETE',
-        headers: {
-          'Accept': 'application/json',
-        }
-      });
-
-      if (response.ok) {
-        console.log('Server-side wiki cache cleared successfully.');
-        // Optionally, show a success message for cache clearing if desired
-        // setLoadingMessage('Cache cleared. Refreshing wiki...');
-      } else {
-        const errorText = await response.text();
-        console.warn(`Failed to clear server-side wiki cache (status: ${response.status}): ${errorText}. Proceeding with refresh anyway.`);
-        // Optionally, inform the user about the cache clear failure but that refresh will still attempt
-        // setError(\`Cache clear failed: ${errorText}. Trying to refresh...\`);
-        if(response.status == 401) {
-          setIsLoading(false);
-          setLoadingMessage(undefined);
-          setError('Failed to validate the authorization code');
-          console.error('Failed to validate the authorization code')
-          return;
-        }
-      }
-    } catch (err) {
-      console.warn('Error calling DELETE /api/wiki_cache:', err);
+    if(authRequired && !authCode) {
       setIsLoading(false);
-      setEmbeddingError(false); // Reset embedding error state
-      // Optionally, inform the user about the cache clear error
-      // setError(\`Error clearing cache: ${err instanceof Error ? err.message : String(err)}. Trying to refresh...\`);
-      throw err;
+      console.error("Authorization code is required");
+      setError('Authorization code is required');
+      return;
     }
 
     // Update token if provided
@@ -1806,8 +1773,10 @@ IMPORTANT:
     }
     window.history.replaceState({}, '', currentUrl.toString());
 
-    // Proceed with the rest of the refresh logic
-    console.log('Refreshing wiki. Server cache will be overwritten upon new generation if not cleared.');
+    // Proceed with the rest of the refresh logic. The new generation is saved as
+    // a NEW release version on the backend (never overwriting the previous wiki),
+    // so the old release remains selectable in the Wiki Release dropdown.
+    console.log('Refreshing wiki — a new release version will be created on save.');
 
     // Clear the localStorage cache (if any remnants or if it was used before this change)
     const localStorageCacheKey = getCacheKey(
@@ -2062,6 +2031,150 @@ IMPORTANT:
     // but keeping the main unmount cleanup in the other useEffect
   }, [effectiveRepoInfo, effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, language, fetchRepositoryStructure, messages.loading?.fetchingCache, isComprehensiveView, pageCount]);
 
+  // Fetch the list of saved wiki releases for this repo/language so the Wiki
+  // Release dropdown can show every version. Called on mount and after each
+  // generation/update. Optionally selects a specific version (e.g. the one just
+  // created) once the list is loaded.
+  const loadWikiReleases = useCallback(async (autoSelectVersion?: number) => {
+    try {
+      const params = new URLSearchParams({
+        owner: effectiveRepoInfo.owner,
+        repo: effectiveRepoInfo.repo,
+        repo_type: effectiveRepoInfo.type,
+        language: language,
+      });
+      const response = await fetch(`/api/wiki_cache/releases?${params.toString()}`);
+      if (!response.ok) {
+        console.warn('Failed to load wiki releases:', response.status);
+        return;
+      }
+      const data = await response.json();
+      const releases: WikiRelease[] = Array.isArray(data?.releases) ? data.releases : [];
+      setWikiReleases(releases);
+      if (autoSelectVersion != null) {
+        setSelectedWikiVersion(autoSelectVersion);
+      } else if (releases.length > 0 && selectedWikiVersion == null) {
+        // On first load, point the dropdown at the newest release (the one
+        // currently displayed) so it reflects what the user is reading.
+        setSelectedWikiVersion(releases[0].version);
+      }
+    } catch (err) {
+      console.warn('Error loading wiki releases:', err);
+    }
+  }, [effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, language, selectedWikiVersion]);
+
+  // Load a specific wiki release version into the view (replaces the currently
+  // displayed wiki with the chosen release without regenerating).
+  const loadWikiRelease = useCallback(async (version: number) => {
+    if (!version) return;
+    setLoadingMessage(messages.loading?.fetchingCache || 'Loading wiki release...');
+    setIsLoading(true);
+    try {
+      const params = new URLSearchParams({
+        owner: effectiveRepoInfo.owner,
+        repo: effectiveRepoInfo.repo,
+        repo_type: effectiveRepoInfo.type,
+        language: language,
+        version: version.toString(),
+      });
+      const response = await fetch(`/api/wiki_cache?${params.toString()}`);
+      if (!response.ok) {
+        throw new Error(`Failed to load release v${version}: ${response.status}`);
+      }
+      const cachedData = await response.json();
+      if (!cachedData || !cachedData.wiki_structure) {
+        throw new Error(`Release v${version} not found`);
+      }
+      const cachedStructure = {
+        ...cachedData.wiki_structure,
+        sections: cachedData.wiki_structure.sections || [],
+        rootSections: cachedData.wiki_structure.rootSections || [],
+      };
+      setWikiStructure(cachedStructure);
+      setGeneratedPages(cachedData.generated_pages || {});
+      setCurrentPageId(cachedStructure.pages.length > 0 ? cachedStructure.pages[0].id : undefined);
+      setSelectedWikiVersion(version);
+      cacheLoadedSuccessfully.current = true;
+      setError(null);
+      setEmbeddingError(false);
+      setIsLoading(false);
+      setLoadingMessage(undefined);
+    } catch (err) {
+      console.error('Error loading wiki release:', err);
+      setError(err instanceof Error ? err.message : String(err));
+      setIsLoading(false);
+      setLoadingMessage(undefined);
+    }
+  }, [effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, language, messages.loading]);
+
+  // Delete the currently selected wiki release from the server, then refresh the
+  // dropdown. If the deleted release was the one on screen, load the next newest
+  // release (or, if none remain, clear the view so the user can regenerate).
+  const deleteWikiRelease = useCallback(async (version: number) => {
+    if (!version) return;
+    if (!window.confirm(
+      (messages.repoPage?.confirmDeleteRelease || 'Delete this wiki release? This cannot be undone.')
+        .replace('{version}', String(version))
+    )) {
+      return;
+    }
+    setIsLoading(true);
+    setLoadingMessage(messages.loading?.clearingCache || 'Deleting wiki release...');
+    try {
+      const params = new URLSearchParams({
+        owner: effectiveRepoInfo.owner,
+        repo: effectiveRepoInfo.repo,
+        repo_type: effectiveRepoInfo.type,
+        language: language,
+        version: version.toString(),
+      });
+      const response = await fetch(`/api/wiki_cache?${params.toString()}`, {
+        method: 'DELETE',
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`Failed to delete release v${version}: ${response.status} ${text}`);
+      }
+      // Refresh the releases list without auto-selecting the deleted version.
+      const releasesParams = new URLSearchParams({
+        owner: effectiveRepoInfo.owner,
+        repo: effectiveRepoInfo.repo,
+        repo_type: effectiveRepoInfo.type,
+        language: language,
+      });
+      const relRes = await fetch(`/api/wiki_cache/releases?${releasesParams.toString()}`);
+      const relData = relRes.ok ? await relRes.json() : { releases: [] };
+      const remaining: WikiRelease[] = Array.isArray(relData?.releases) ? relData.releases : [];
+      setWikiReleases(remaining);
+
+      if (remaining.length > 0) {
+        // Load the newest remaining release into the view.
+        await loadWikiRelease(remaining[0].version);
+      } else {
+        // No releases left — clear the view.
+        setSelectedWikiVersion(null);
+        setWikiStructure(undefined);
+        setGeneratedPages({});
+        setCurrentPageId(undefined);
+        cacheLoadedSuccessfully.current = false;
+        setIsLoading(false);
+        setLoadingMessage(undefined);
+      }
+    } catch (err) {
+      console.error('Error deleting wiki release:', err);
+      setError(err instanceof Error ? err.message : String(err));
+      setIsLoading(false);
+      setLoadingMessage(undefined);
+    }
+  }, [effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, language, messages.loading, messages.repoPage, loadWikiRelease]);
+
+  // Load the releases list once on mount so the Wiki Release dropdown is populated
+  // for an already-generated wiki.
+  useEffect(() => {
+    loadWikiReleases();
+  }, [loadWikiReleases]);
+
   // Save wiki to server-side cache when generation is complete
   useEffect(() => {
     const saveCache = async () => {
@@ -2104,7 +2217,22 @@ IMPORTANT:
             });
 
             if (response.ok) {
-              console.log('Wiki data successfully saved to server cache');
+              // The backend assigns and returns the new release version number.
+              // Refresh the Wiki Release dropdown and select the version just
+              // created so the dropdown reflects the wiki now on screen.
+              try {
+                const result = await response.json();
+                const newVersion = typeof result?.version === 'number' ? result.version : undefined;
+                console.log(`Wiki data successfully saved to server cache as release v${newVersion ?? '?'}`);
+                if (newVersion != null) {
+                  loadWikiReleases(newVersion);
+                } else {
+                  loadWikiReleases();
+                }
+              } catch {
+                console.log('Wiki data successfully saved to server cache');
+                loadWikiReleases();
+              }
             } else {
               console.error('Error saving wiki data to server cache:', response.status, await response.text());
             }
@@ -2116,7 +2244,7 @@ IMPORTANT:
     };
 
     saveCache();
-  }, [isLoading, error, wikiStructure, generatedPages, effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, effectiveRepoInfo.repoUrl, repoUrl, language, isComprehensiveView, pageCount]);
+  }, [isLoading, error, wikiStructure, generatedPages, effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, effectiveRepoInfo.repoUrl, repoUrl, language, isComprehensiveView, pageCount, selectedProviderState, selectedModelState, loadWikiReleases]);
 
   const handlePageSelect = (pageId: string) => {
     if (currentPageId != pageId) {
@@ -2286,7 +2414,63 @@ IMPORTANT:
                 </span>
               </div>
 
-              {/* Refresh Wiki button */}
+              {/* Wiki Release dropdown — pick any saved version to read it.
+                  Updates create new versions instead of overwriting, so every
+                  release stays available here. */}
+              {wikiReleases.length > 0 && (
+                <div className="mb-3">
+                  <label
+                    htmlFor="wiki-release-select"
+                    className="flex items-center text-xs text-[var(--muted)] mb-1.5 font-mono"
+                  >
+                    <FaHistory className="mr-1.5" />
+                    {messages.repoPage?.wikiRelease || 'Wiki Release'}
+                  </label>
+                  <div className="flex items-stretch gap-2">
+                    <select
+                      id="wiki-release-select"
+                      value={selectedWikiVersion ?? ''}
+                      onChange={(e) => {
+                        const v = Number(e.target.value);
+                        if (!Number.isNaN(v) && v > 0) {
+                          loadWikiRelease(v);
+                        }
+                      }}
+                      disabled={isLoading}
+                      className="flex-1 min-w-0 text-xs px-3 py-2 bg-[var(--background)] text-[var(--foreground)] rounded-md border border-[var(--border-color)] disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:border-[var(--accent-primary)] transition-colors hover:cursor-pointer"
+                    >
+                      {wikiReleases.map((release) => {
+                        const date = new Date(release.created_at);
+                        const dateStr = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+                        const mode = release.comprehensive
+                          ? (messages.form?.comprehensive || 'Comprehensive')
+                          : (messages.form?.concise || 'Concise');
+                        return (
+                          <option key={release.id} value={release.version}>
+                            v{release.version} — {dateStr} ({mode}, {release.page_count}p)
+                          </option>
+                        );
+                      })}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (selectedWikiVersion != null) {
+                          deleteWikiRelease(selectedWikiVersion);
+                        }
+                      }}
+                      disabled={isLoading || selectedWikiVersion == null}
+                      title={messages.repoPage?.deleteRelease || 'Delete selected release'}
+                      aria-label={messages.repoPage?.deleteRelease || 'Delete selected release'}
+                      className="flex items-center justify-center px-3 text-xs bg-[var(--background)] text-[var(--highlight)] rounded-md border border-[var(--border-color)] hover:bg-[var(--highlight)]/10 disabled:opacity-50 disabled:cursor-not-allowed transition-colors hover:cursor-pointer"
+                    >
+                      <FaTrash />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Refresh Wiki button — creates a new release version on save */}
               <div className="mb-5">
                 <button
                   onClick={() => setIsModelSelectionModalOpen(true)}

@@ -96,6 +96,9 @@
   },
   "repoPage": {
     "refreshWiki": "重新整理 Wiki",
+    "wikiRelease": "Wiki 版本",
+    "deleteRelease": "刪除所選版本",
+    "confirmDeleteRelease": "刪除 wiki 版本 v{version}？此動作無法復原。",
     "confirmRefresh": "確認重新整理",
     "cancel": "取消",
     "home": "首頁",
