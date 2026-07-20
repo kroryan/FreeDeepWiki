@@ -234,11 +234,35 @@ function forceMermaidReadable(root: HTMLElement | null) {
   //    background. Scoped to the diagram SVG only.
   svg.style.backgroundColor = canvas;
 
+  // Detect sequence diagrams by their mermaid-specific SVG classes. Sequence
+  // diagrams render labels as plain SVG <text> sitting on the dark canvas /
+  // dark actor boxes (their .actor boxes are NOT matched by the generic
+  // `.node rect` rule in step 2, so they stay dark in dark mode). The fdwStyle
+  // injected into every SVG forces ALL <text> to near-black (#1a1a1a) with
+  // !important, which beats the non-important inline fill set below — so without
+  // an override, sequence text ends up dark-on-dark and unreadable. For sequence
+  // diagrams in dark mode we therefore set the fill via inline !important
+  // (style.setProperty priority='important'), which beats the injected
+  // stylesheet's !important rule (inline !important > author stylesheet
+  // !important). Pure white for maximum contrast, as requested. Every other
+  // diagram type keeps its current behavior (dark text, legible on the light
+  // cream node fills that fdwStyle also forces).
+  const isSequence = !!svg.querySelector(
+    '.messageText, .actor-line, text.actor, #sequenceNumber, .messageLine0, .messageLine1, .noteText, .labelBox',
+  );
+  const forceWhiteText = isDark && isSequence;
+
   // 1. Every SVG <text> element (sequence diagrams, actor names, state labels,
   //    axis text, etc.) -> the theme's text color.
   svg.querySelectorAll('text').forEach((t) => {
-    t.setAttribute('fill', textColor);
-    (t as SVGTextElement).style.fill = textColor;
+    if (forceWhiteText) {
+      (t as SVGTextElement).style.setProperty('fill', '#ffffff', 'important');
+      (t as SVGTextElement).style.setProperty('color', '#ffffff', 'important');
+      t.setAttribute('fill', '#ffffff');
+    } else {
+      t.setAttribute('fill', textColor);
+      (t as SVGTextElement).style.fill = textColor;
+    }
   });
 
   // 2. Shape fills -> the theme's box fill so labels are legible on them.
@@ -261,12 +285,22 @@ function forceMermaidReadable(root: HTMLElement | null) {
 
   // 3. HTML labels inside <foreignObject> (flowchart/class/state htmlLabels) ->
   //    theme text color, transparent background, on every descendant so nothing
-  //    inherits a mismatched page foreground.
+  //    inherits a mismatched page foreground. For sequence diagrams in dark
+  //    mode, force white with !important (same reason as step 1 — beat the
+  //    injected fdwStyle that forces #1a1a1a !important).
   svg.querySelectorAll('foreignObject').forEach((fo) => {
-    (fo as SVGElement).style.color = textColor;
+    if (forceWhiteText) {
+      (fo as SVGElement).style.setProperty('color', '#ffffff', 'important');
+    } else {
+      (fo as SVGElement).style.color = textColor;
+    }
     fo.querySelectorAll('*').forEach((child) => {
       const c = child as HTMLElement;
-      c.style.color = textColor;
+      if (forceWhiteText) {
+        c.style.setProperty('color', '#ffffff', 'important');
+      } else {
+        c.style.color = textColor;
+      }
       c.style.backgroundColor = 'transparent';
     });
   });
