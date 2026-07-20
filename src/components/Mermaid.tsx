@@ -545,13 +545,28 @@ const Mermaid: React.FC<MermaidProps> = ({ chart, className = '', zoomingEnabled
         // foreignObject descendant and a dark fill on every <text>, plus light
         // node fills — unconditionally. Diagrams are therefore always
         // black-on-cream and legible no matter the page theme.
+        // Sequence diagrams render their labels as plain SVG <text> on the dark
+        // canvas / dark actor boxes (their .actor boxes are NOT matched by the
+        // generic `.node rect` rule below, so forceMermaidReadable paints them
+        // dark in dark mode). The generic rule forces ALL text to near-black
+        // (#1a1a1a !important), which beats forceMermaidReadable's inline light
+        // text — so sequence text ends up dark-on-dark and unreadable in dark
+        // mode. Tag sequence diagrams and add a higher-specificity !important
+        // override that forces their text white in dark mode ONLY. Every other
+        // diagram type keeps its current (dark-text) behavior untouched.
+        const isSequence = /^\s*sequenceDiagram\b/im.test(normalizedChart);
+        const sequenceOverride = isSequence
+          ? `
+[data-theme="dark"] [data-fdw-sequence] text { fill: #ffffff !important; color: #ffffff !important; }
+[data-theme="dark"] [data-fdw-sequence] foreignObject, [data-theme="dark"] [data-fdw-sequence] foreignObject * { color: #ffffff !important; }`
+          : '';
         const fdwStyle = `<style>
 [data-fdw-mermaid] foreignObject, [data-fdw-mermaid] foreignObject * { color: #1a1a1a !important; background-color: transparent !important; }
 [data-fdw-mermaid] text { fill: #1a1a1a !important; color: #1a1a1a !important; }
 [data-fdw-mermaid] .node rect, [data-fdw-mermaid] .node circle, [data-fdw-mermaid] .node ellipse, [data-fdw-mermaid] .node polygon, [data-fdw-mermaid] .cluster rect { fill: #f8f4e6 !important; stroke: #b9a89f !important; }
-[data-fdw-mermaid] .edgePath .path { stroke: #7a5ca8 !important; stroke-width: 1.5px !important; }
+[data-fdw-mermaid] .edgePath .path { stroke: #7a5ca8 !important; stroke-width: 1.5px !important; }${sequenceOverride}
 </style>`;
-        processedSvg = processedSvg.replace('<svg ', '<svg data-fdw-mermaid="1" ');
+        processedSvg = processedSvg.replace('<svg ', `<svg data-fdw-mermaid="1"${isSequence ? ' data-fdw-sequence="1"' : ''} `);
         processedSvg = processedSvg.replace(/^(<svg[^>]*>)/, `$1${fdwStyle}`);
 
         setSvg(processedSvg);
