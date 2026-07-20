@@ -254,16 +254,29 @@ function forceMermaidReadable(root: HTMLElement | null) {
 
   // 1. Every SVG <text> element (sequence diagrams, actor names, state labels,
   //    axis text, etc.) -> the theme's text color.
-  svg.querySelectorAll('text').forEach((t) => {
-    if (forceWhiteText) {
+  //
+  //    For sequence diagrams in dark mode we must also force the <tspan>
+  //    children, not just the <text>. Mermaid's own themeCSS sets fill directly
+  //    on the tspans (`.noteText > tspan`, `.labelText > tspan`,
+  //    `.loopText > tspan` …) to a gray/note color. A directly-specified author
+  //    rule on the tspan beats the fill INHERITED from the parent <text>, so
+  //    setting white only on <text> left note/loop/label text gray on the dark
+  //    boxes — unreadable. Setting inline !important white on the tspans too
+  //    beats mermaid's tspan rule (no !important) and the injected fdwStyle
+  //    (#1a1a1a !important only matches <text>, not <tspan>). Message text has
+  //    no `> tspan` rule so it already inherited white correctly.
+  if (forceWhiteText) {
+    svg.querySelectorAll('text, tspan').forEach((t) => {
       (t as SVGTextElement).style.setProperty('fill', '#ffffff', 'important');
       (t as SVGTextElement).style.setProperty('color', '#ffffff', 'important');
       t.setAttribute('fill', '#ffffff');
-    } else {
+    });
+  } else {
+    svg.querySelectorAll('text').forEach((t) => {
       t.setAttribute('fill', textColor);
       (t as SVGTextElement).style.fill = textColor;
-    }
-  });
+    });
+  }
 
   // 2. Shape fills -> the theme's box fill so labels are legible on them.
   //    Includes the sequence-diagram boxes (.actor participant boxes, .note,
