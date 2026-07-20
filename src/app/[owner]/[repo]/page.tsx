@@ -116,7 +116,11 @@ const addTokensToRequestBody = (
 
   // Add provider-based model selection parameters
   requestBody.provider = provider;
-  requestBody.model = model;
+  // When a custom model name is provided it takes precedence over the dropdown selection.
+  // The backend chat-completion request schema only honors `model` (it does not parse a
+  // separate custom_model field), so we must send the custom model as `model` for it to
+  // actually be used against the provider endpoint.
+  requestBody.model = (isCustomModel && customModel) ? customModel : model;
   if (isCustomModel && customModel) {
     requestBody.custom_model = customModel;
   }
@@ -691,12 +695,16 @@ Remember:
       } catch (err) {
         console.error(`Error generating content for page ${page.id}:`, err);
         const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-        // Update page state to show error
+        // Update page state to show error inline on the specific page.
+        // IMPORTANT: do NOT call setError() here. setError() triggers the full-screen
+        // error UI (which shows the misleading "repository does not exist" fallback) and
+        // hides the entire wiki — including the pages that generated successfully — which
+        // prevents the user from saving/exporting the rest of the wiki. A single failed
+        // page is shown inline via its content below; the wiki view stays usable.
         setGeneratedPages(prev => ({
           ...prev,
           [page.id]: { ...page, content: `Error generating content: ${errorMessage}` }
         }));
-        setError(`Failed to generate content for ${page.title}.`);
         resolve(); // Resolve even on error to unblock queue
       } finally {
         // Clear the processing flag for this page
@@ -973,6 +981,21 @@ IMPORTANT:
        if(responseText.includes('Ollama model') && responseText.includes('not found')) {
          setEmbeddingError(true);
          throw new Error('The specified Ollama embedding model was not found. Please ensure the model is installed locally or select a different embedding model in the configuration.');
+       }
+
+       // Custom OpenAI-compatible provider (Novita, Together, Groq, vLLM, ...) returned an
+       // error. The most common cause is MODEL_NOT_FOUND — e.g. a model belonging to another
+       // provider (an Ollama model such as "gpt-oss:120b-cloud") was sent to the endpoint, or
+       // the selected model is not served by the configured base URL. Surface a clear,
+       // actionable error instead of falling through to "No valid XML found in response".
+       if (responseText.includes('Error with Openai API') || responseText.includes('MODEL_NOT_FOUND') || (responseText.includes('model') && responseText.includes('not found') && responseText.includes('Error'))) {
+         const modelMatch = responseText.match(/model[:\s]+([^\s,'}]+)\s+not found/i);
+         const modelName = modelMatch ? modelMatch[1] : '';
+         throw new Error(
+           modelName
+             ? `The model "${modelName}" was not found at the configured provider endpoint. Open Settings, click Reload to fetch the available models, and select a model that is valid for this provider.`
+             : `The configured provider endpoint returned an error for the selected model. Open Settings, click Reload to fetch the available models, and select a valid model for this provider.`
+         );
        }
 
         // Clean up markdown delimiters
@@ -1759,6 +1782,18 @@ IMPORTANT:
     const currentUrl = new URL(window.location.href);
     currentUrl.searchParams.set('comprehensive', refreshComprehensive.toString());
     currentUrl.searchParams.set('pages', refreshPageCount.toString());
+    // Keep provider/model in the URL in sync with the user's selection so a full page
+    // reload uses the same model they chose in the modal (and the server-cache match check
+    // in loadData compares against the right values).
+    currentUrl.searchParams.set('provider', refreshProvider);
+    currentUrl.searchParams.set('model', refreshModel);
+    if (refreshIsCustomModel && refreshCustomModel) {
+      currentUrl.searchParams.set('is_custom_model', 'true');
+      currentUrl.searchParams.set('custom_model', refreshCustomModel);
+    } else {
+      currentUrl.searchParams.delete('is_custom_model');
+      currentUrl.searchParams.delete('custom_model');
+    }
     window.history.replaceState({}, '', currentUrl.toString());
 
     // Proceed with the rest of the refresh logic
@@ -1827,13 +1862,34 @@ IMPORTANT:
           if (response.ok) {
             const cachedData = await response.json(); // Returns null if no cache
             if (cachedData && cachedData.wiki_structure && cachedData.generated_pages && Object.keys(cachedData.generated_pages).length > 0) {
-              console.log('Using server-cached wiki data');
-              if(cachedData.model) {
-                setSelectedModelState(cachedData.model);
-              }
-              if(cachedData.provider) {
-                setSelectedProviderState(cachedData.provider);
-              }
+              // The server wiki cache is keyed only by owner/repo/language/page-count, NOT by
+              // provider/model. A previous generation with a different model (e.g. an Ollama
+              // model like "gpt-oss:120b-cloud") would otherwise be restored here and OVERWRITE
+              // the user's explicitly selected provider/model — causing the stale model to be
+              // sent to the newly selected provider (e.g. Novita) and fail with MODEL_NOT_FOUND.
+              // Only use the cache when it matches the user's explicit selection; otherwise drop
+              // it and regenerate with the model the user actually chose.
+              const explicitProvider = providerParam;
+              const explicitModel = modelParam;
+              const cacheMatchesSelection =
+                (!cachedData.provider || !explicitProvider || cachedData.provider === explicitProvider) &&
+                (!cachedData.model || !explicitModel || cachedData.model === explicitModel);
+
+              if (!cacheMatchesSelection) {
+                console.log('Ignoring server-cached wiki: cached model/provider does not match the user\'s selection. Regenerating.', {
+                  cachedProvider: cachedData.provider, explicitProvider,
+                  cachedModel: cachedData.model, explicitModel,
+                });
+              } else {
+                console.log('Using server-cached wiki data');
+                // Only restore model/provider from cache when the user did not specify them
+                // explicitly (e.g. navigated directly to the repo URL without query params).
+                if (cachedData.model && !explicitModel) {
+                  setSelectedModelState(cachedData.model);
+                }
+                if (cachedData.provider && !explicitProvider) {
+                  setSelectedProviderState(cachedData.provider);
+                }
 
               // Update repoInfo
               if(cachedData.repo) {
@@ -1968,6 +2024,7 @@ IMPORTANT:
               setLoadingMessage(undefined);
               cacheLoadedSuccessfully.current = true;
               return; // Exit if cache is successfully loaded
+              } // end of use-cache branch (cacheMatchesSelection)
             } else {
               console.log('No valid wiki data in server cache or cache is empty.');
             }

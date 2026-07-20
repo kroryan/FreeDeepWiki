@@ -373,7 +373,9 @@ export default function Home() {
     }
     // Add model parameters
     params.append('provider', provider);
-    params.append('model', model);
+    // Send the custom model as `model` when one is provided, so the repo page picks it up
+    // directly as its selected model (the backend only honors `model`, not custom_model).
+    params.append('model', (isCustomModel && customModel) ? customModel : model);
     if (isCustomModel && customModel) {
       params.append('custom_model', customModel);
     }

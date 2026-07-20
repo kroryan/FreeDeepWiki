@@ -213,6 +213,13 @@ export default function UserSelector({
         const selectedProvider = modelConfig.providers.find((p: Provider) => p.id === newProvider);
         if (selectedProvider && selectedProvider.models.length > 0) {
           setModel(selectedProvider.models[0].id);
+        } else {
+          // Provider has no built-in model list (e.g. openai_custom). Clear any model
+          // carried over from the previous provider so we don't send, for example, an
+          // Ollama model name ("gpt-oss:120b-cloud") to a custom OpenAI-compatible
+          // endpoint, which would fail with MODEL_NOT_FOUND. The user must click Reload
+          // to fetch the available models (which sets the model to the first one).
+          setModel('');
         }
       }
     }, 10);
