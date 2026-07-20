@@ -1,5 +1,7 @@
 import os
 import re
+import io
+import zipfile
 import logging
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -125,7 +127,9 @@ class WikiExportRequest(BaseModel):
     """
     repo_url: str = Field(..., description="URL of the repository")
     pages: List[WikiPage] = Field(..., description="List of wiki pages to export")
-    format: Literal["markdown", "json"] = Field(..., description="Export format (markdown or json)")
+    format: Literal["markdown", "json", "obsidian"] = Field(..., description="Export format (markdown, json, or obsidian vault zip)")
+    title: Optional[str] = Field(None, description="Wiki title (used for the Obsidian vault name/index)")
+    version: Optional[int] = Field(None, description="Wiki release version being exported (informational)")
 
 # --- Model Configuration Models ---
 class Model(BaseModel):
@@ -380,6 +384,18 @@ async def export_wiki(request: WikiExportRequest):
             content = generate_markdown_export(request.repo_url, request.pages)
             filename = f"{repo_name}_wiki_{timestamp}.md"
             media_type = "text/markdown"
+        elif request.format == "obsidian":
+            # Generate a full Obsidian vault (one .md per page with [[wikilinks]])
+            # packaged as a downloadable .zip
+            content = generate_obsidian_vault_export(
+                request.repo_url,
+                request.pages,
+                title=request.title or f"{repo_name} Wiki",
+                version=request.version,
+            )
+            version_suffix = f"_v{request.version}" if request.version else ""
+            filename = f"{repo_name}_wiki{version_suffix}_{timestamp}_obsidian.zip"
+            media_type = "application/zip"
         else:  # JSON format
             # Generate JSON content
             content = generate_json_export(request.repo_url, request.pages)
@@ -519,6 +535,97 @@ def generate_json_export(repo_url: str, pages: List[WikiPage]) -> str:
 
     # Convert to JSON string with pretty formatting
     return json.dumps(export_data, indent=2)
+
+
+def _obsidian_safe_filename(title: str) -> str:
+    """Turn a page title into a safe Obsidian note filename (no extension).
+
+    Obsidian disallows these characters in note names: * " \\ / < > : | ?
+    Also strip control chars and trailing dots/spaces (Windows compatibility,
+    important because the vault zip must travel across OSes).
+    """
+    name = re.sub(r'[*"\\/<>:|?]', '-', title)
+    name = re.sub(r'[\x00-\x1f]', '', name)
+    name = re.sub(r'-{2,}', '-', name)          # collapse runs of dashes
+    name = re.sub(r'\s+-\s*$', '', name)        # drop dangling " -" endings
+    name = name.strip().rstrip('.-').strip()
+    return name or 'Untitled'
+
+
+def generate_obsidian_vault_export(
+    repo_url: str,
+    pages: List[WikiPage],
+    title: str = "Wiki",
+    version: Optional[int] = None,
+) -> bytes:
+    """Generate a complete Obsidian vault as a .zip (returned as bytes).
+
+    Layout inside the zip:
+        <Vault>/
+          Home.md                  – index note linking every page with [[wikilinks]]
+          <Page Title>.md          – one note per wiki page, YAML frontmatter +
+                                     "Related" section using [[wikilinks]]
+          .obsidian/app.json       – minimal config so Obsidian opens the folder
+                                     as a vault directly after unzipping
+
+    An Obsidian vault is just a folder of Markdown files, so the zip can be
+    unzipped anywhere (Windows/macOS/Linux) and opened with
+    "Open folder as vault" — matching this project's portability goal.
+    """
+    vault_name = _obsidian_safe_filename(title)
+
+    # Map page id -> unique safe filename, deduping title collisions.
+    id_to_name: Dict[str, str] = {}
+    used_names: Dict[str, int] = {}
+    for page in pages:
+        base = _obsidian_safe_filename(page.title)
+        count = used_names.get(base, 0)
+        used_names[base] = count + 1
+        id_to_name[page.id] = base if count == 0 else f"{base} ({count + 1})"
+
+    generated_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        # Minimal .obsidian config so the unzipped folder is recognized as a vault.
+        zf.writestr(f"{vault_name}/.obsidian/app.json", json.dumps({}, indent=2))
+
+        # Home/index note with links to every page.
+        home = f"# {title}\n\n"
+        home += f"- **Repository:** {repo_url}\n"
+        if version:
+            home += f"- **Wiki release:** v{version}\n"
+        home += f"- **Exported:** {generated_at}\n\n"
+        home += "## Pages\n\n"
+        for page in pages:
+            home += f"- [[{id_to_name[page.id]}]]\n"
+        zf.writestr(f"{vault_name}/Home.md", home)
+
+        # One note per page.
+        for page in pages:
+            note = "---\n"
+            note += f"title: {json.dumps(page.title)}\n"
+            note += f"page_id: {json.dumps(page.id)}\n"
+            note += f"importance: {json.dumps(page.importance)}\n"
+            if version:
+                note += f"wiki_release: {version}\n"
+            if page.filePaths:
+                note += "source_files:\n"
+                for fp in page.filePaths:
+                    note += f"  - {json.dumps(fp)}\n"
+            note += "---\n\n"
+            note += f"{page.content}\n"
+            related_links = [
+                f"[[{id_to_name[rid]}]]"
+                for rid in (page.relatedPages or [])
+                if rid in id_to_name
+            ]
+            if related_links:
+                note += "\n## Related\n\n"
+                note += " · ".join(related_links) + "\n"
+            zf.writestr(f"{vault_name}/{id_to_name[page.id]}.md", note)
+
+    return buffer.getvalue()
 
 # Import the simplified chat implementation
 from api.simple_chat import chat_completions_stream
@@ -683,7 +790,41 @@ async def save_wiki_cache(data: WikiCacheRequest) -> Optional[int]:
     Each save creates a fresh ``_v{N}`` file (N = max existing version + 1) so an
     update never overwrites the previous wiki. Returns the assigned version, or
     None on failure.
+
+    Dedupe guard: if the payload is identical to the newest existing release
+    (ignoring the version number), no new file is written and the existing
+    version is returned. This makes duplicate POSTs (double-fired frontend
+    effects, retries, reloads) idempotent instead of minting v1..vN copies of
+    the same wiki.
     """
+    try:
+        files = _list_repo_cache_files(
+            data.repo.type, data.repo.owner, data.repo.repo, data.language
+        )
+        if files:
+            files.sort(
+                key=lambda p: (_parse_cache_version(os.path.basename(p)), os.path.getmtime(p)),
+                reverse=True,
+            )
+            newest_path = files[0]
+            with open(newest_path, "r", encoding="utf-8") as f:
+                newest = WikiCacheData(**json.load(f))
+            newest_version = _parse_cache_version(os.path.basename(newest_path))
+            same_content = (
+                newest.wiki_structure == data.wiki_structure
+                and newest.generated_pages == data.generated_pages
+                and newest.provider == data.provider
+                and newest.model == data.model
+            )
+            if same_content:
+                logger.info(
+                    f"Wiki cache save skipped: payload identical to existing release "
+                    f"v{newest_version} ({os.path.basename(newest_path)})"
+                )
+                return newest_version if newest_version > 0 else 0
+    except Exception as dedupe_error:
+        logger.warning(f"Wiki cache dedupe check failed (saving anyway): {dedupe_error}")
+
     next_version = _next_cache_version(
         data.repo.type, data.repo.owner, data.repo.repo, data.language
     )

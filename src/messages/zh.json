@@ -111,6 +111,8 @@
     "exportWiki": "导出Wiki",
     "exportAsMarkdown": "导出为Markdown",
     "exportAsJson": "导出为JSON",
+    "exportAsObsidian": "导出为 Obsidian 仓库 (.zip)",
+    "exportAsObsidianHint": "将所选 wiki 版本完整下载为 Obsidian 仓库 (.zip)",
     "pages": "页面",
     "relatedFiles": "相关文件：",
     "relatedPages": "相关页面：",

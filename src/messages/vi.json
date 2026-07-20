@@ -111,6 +111,8 @@
     "exportWiki": "Xuất Wiki",
     "exportAsMarkdown": "Xuất dưới dạng Markdown",
     "exportAsJson": "Xuất dưới dạng JSON",
+    "exportAsObsidian": "Xuất thành Obsidian Vault (.zip)",
+    "exportAsObsidianHint": "Tải toàn bộ phiên bản wiki đã chọn dưới dạng Obsidian vault (.zip)",
     "pages": "Trang",
     "relatedFiles": "Tệp liên quan:",
     "relatedPages": "Trang liên quan:",

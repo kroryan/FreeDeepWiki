@@ -111,6 +111,8 @@
     "exportWiki": "Wikiをエクスポート",
     "exportAsMarkdown": "Markdownとしてエクスポート",
     "exportAsJson": "JSONとしてエクスポート",
+    "exportAsObsidian": "Obsidian ボールトとしてエクスポート (.zip)",
+    "exportAsObsidianHint": "選択した Wiki リリース全体を Obsidian ボールト (.zip) としてダウンロード",
     "pages": "ページ",
     "relatedFiles": "関連ファイル:",
     "relatedPages": "関連ページ:",

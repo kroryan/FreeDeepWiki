@@ -120,6 +120,8 @@
       "exportWiki": "Exporter le Wiki",
       "exportAsMarkdown": "Exporter en Markdown",
       "exportAsJson": "Exporter en JSON",
+      "exportAsObsidian": "Exporter en coffre Obsidian (.zip)",
+      "exportAsObsidianHint": "Télécharger l'intégralité de la version sélectionnée du wiki comme coffre Obsidian (.zip)",
       "pages": "Pages",
       "relatedFiles": "Fichiers associés :",
       "relatedPages": "Pages associées :",

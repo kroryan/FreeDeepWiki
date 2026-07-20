@@ -1638,7 +1638,7 @@ IMPORTANT:
   }, [owner, repo, determineWikiStructure, currentToken, effectiveRepoInfo, requestInProgress, messages.loading]);
 
   // Function to export wiki content
-  const exportWiki = useCallback(async (format: 'markdown' | 'json') => {
+  const exportWiki = useCallback(async (format: 'markdown' | 'json' | 'obsidian') => {
     if (!wikiStructure || Object.keys(generatedPages).length === 0) {
       setExportError('No wiki content to export');
       return;
@@ -1672,7 +1672,9 @@ IMPORTANT:
           repo_url: repoUrl,
           type: effectiveRepoInfo.type,
           pages: pagesToExport,
-          format
+          format,
+          title: wikiStructure.title,
+          version: selectedWikiVersion ?? undefined,
         })
       });
 
@@ -1683,7 +1685,8 @@ IMPORTANT:
 
       // Get the filename from the Content-Disposition header if available
       const contentDisposition = response.headers.get('Content-Disposition');
-      let filename = `${effectiveRepoInfo.repo}_wiki.${format === 'markdown' ? 'md' : 'json'}`;
+      const defaultExt = format === 'markdown' ? 'md' : format === 'obsidian' ? 'zip' : 'json';
+      let filename = `${effectiveRepoInfo.repo}_wiki.${defaultExt}`;
 
       if (contentDisposition) {
         const filenameMatch = contentDisposition.match(/filename=(.+)/);
@@ -1711,7 +1714,7 @@ IMPORTANT:
       setIsExporting(false);
       setLoadingMessage(undefined);
     }
-  }, [wikiStructure, generatedPages, effectiveRepoInfo, language]);
+  }, [wikiStructure, generatedPages, effectiveRepoInfo, language, selectedWikiVersion]);
 
   // No longer needed as we use the modal directly
 
@@ -2053,15 +2056,17 @@ IMPORTANT:
       setWikiReleases(releases);
       if (autoSelectVersion != null) {
         setSelectedWikiVersion(autoSelectVersion);
-      } else if (releases.length > 0 && selectedWikiVersion == null) {
+      } else if (releases.length > 0) {
         // On first load, point the dropdown at the newest release (the one
-        // currently displayed) so it reflects what the user is reading.
-        setSelectedWikiVersion(releases[0].version);
+        // currently displayed). Functional update keeps this callback's identity
+        // stable (no selectedWikiVersion dependency) — a changing identity here
+        // previously re-triggered the save effect in an infinite save loop.
+        setSelectedWikiVersion(prev => (prev == null ? releases[0].version : prev));
       }
     } catch (err) {
       console.warn('Error loading wiki releases:', err);
     }
-  }, [effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, language, selectedWikiVersion]);
+  }, [effectiveRepoInfo.owner, effectiveRepoInfo.repo, effectiveRepoInfo.type, language]);
 
   // Load a specific wiki release version into the view (replaces the currently
   // displayed wiki with the chosen release without regenerating).
@@ -2217,6 +2222,11 @@ IMPORTANT:
             });
 
             if (response.ok) {
+              // Mark the on-screen wiki as persisted BEFORE any state updates so
+              // this effect can never re-fire and save the same wiki again as
+              // another release (this exact loop once produced hundreds of
+              // duplicate versions from a single generation).
+              cacheLoadedSuccessfully.current = true;
               // The backend assigns and returns the new release version number.
               // Refresh the Wiki Release dropdown and select the version just
               // created so the dropdown reflects the wiki now on screen.
@@ -2504,6 +2514,15 @@ IMPORTANT:
                     >
                       <FaFileExport className="mr-2" />
                       {messages.repoPage?.exportAsJson || 'Export as JSON'}
+                    </button>
+                    <button
+                      onClick={() => exportWiki('obsidian')}
+                      disabled={isExporting}
+                      title={messages.repoPage?.exportAsObsidianHint || 'Download the whole selected wiki release as an Obsidian vault (.zip)'}
+                      className="flex items-center text-xs px-3 py-2 bg-[var(--background)] text-[var(--foreground)] rounded-md hover:bg-[var(--background)]/80 disabled:opacity-50 disabled:cursor-not-allowed border border-[var(--border-color)] transition-colors"
+                    >
+                      <FaBookOpen className="mr-2" />
+                      {messages.repoPage?.exportAsObsidian || 'Export as Obsidian Vault (.zip)'}
                     </button>
                   </div>
                   {exportError && (

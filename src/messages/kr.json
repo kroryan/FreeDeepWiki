@@ -111,6 +111,8 @@
       "exportWiki": "위키 내보내기",
       "exportAsMarkdown": "마크다운으로 내보내기",
       "exportAsJson": "JSON으로 내보내기",
+      "exportAsObsidian": "Obsidian 볼트로 내보내기 (.zip)",
+      "exportAsObsidianHint": "선택한 위키 릴리스 전체를 Obsidian 볼트(.zip)로 다운로드",
       "pages": "페이지",
       "relatedFiles": "관련 파일:",
       "relatedPages": "관련 페이지:",
