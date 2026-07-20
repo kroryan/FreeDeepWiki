@@ -109,6 +109,68 @@ class OpenRouterClient(ModelClient):
         else:
             raise ValueError(f"Unsupported model type: {model_type}")
 
+    async def astream(self, api_kwargs: Dict):
+        """True token-by-token streaming, used by api/provider_streaming.py's
+        chat path so OpenRouter answers appear progressively instead of as
+        one buffered blob. Kept fully separate from acall() below (which
+        deliberately forces `stream: False` -- see its docstring) since
+        acall() is also the model_client used for structured wiki_structure
+        XML generation via adalflow's Generator, and that path's XML
+        cleanup/repair logic needs the complete response body, not
+        incremental deltas; this method is additive and only used by
+        callers that explicitly want live streaming.
+
+        OpenRouter's streaming mode follows the OpenAI-compatible SSE
+        format: one `data: {...}` line per chunk with a
+        `choices[0].delta.content` field, terminated by a literal
+        `data: [DONE]` line.
+        """
+        if not self.async_client:
+            self.async_client = self.init_async_client()
+        if not self.async_client.get("api_key"):
+            raise RuntimeError(
+                "OPENROUTER_API_KEY not configured. Please set this environment "
+                "variable to use OpenRouter."
+            )
+
+        headers = {
+            "Authorization": f"Bearer {self.async_client['api_key']}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/kroryan/FreeDeepWiki",
+            "X-Title": "FreeDeepWiki",
+        }
+        api_kwargs = {**api_kwargs, "stream": True}
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self.async_client['base_url']}/chat/completions",
+                headers=headers,
+                json=api_kwargs,
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(f"OpenRouter API error ({response.status}): {error_text}")
+
+                async for raw_line in response.content:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if not data_str or data_str == "[DONE]":
+                        continue
+                    try:
+                        chunk = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    text = delta.get("content")
+                    if text:
+                        yield text
+
     async def acall(self, api_kwargs: Dict = None, model_type: ModelType = None) -> Any:
         """Make an asynchronous call to the OpenRouter API."""
         if not self.async_client:

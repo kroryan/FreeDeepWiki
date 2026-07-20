@@ -12,7 +12,8 @@ never starts. Accepts either:
   Anthropic requires for OAuth-authenticated requests.
 """
 
-from typing import Any, Dict
+from typing import Any, AsyncIterator, Dict
+import json
 import logging
 import os
 
@@ -75,6 +76,165 @@ class AnthropicClient(ModelClient):
         return "".join(
             block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
         )
+
+    async def _post_messages(self, api_kwargs: Dict) -> Dict:
+        """Raw POST to /messages, shared by acall (text-only) and
+        acall_with_tools (needs the full parsed response, since a tool_use
+        block isn't text)."""
+        if not self._api_key:
+            raise RuntimeError(
+                "Anthropic API key not configured. Set an API key or paste a Claude "
+                "Pro/Max subscription token (from `claude login`) for the Claude provider."
+            )
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self.base_url}/messages",
+                headers=self._headers(),
+                json=api_kwargs,
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(f"Anthropic API error ({response.status}): {error_text}")
+                return await response.json()
+
+    async def astream_with_tools(self, *, messages: list, tools: list, model_kwargs: Dict):
+        """Native tool-calling round-trip for api/agent_loop.py's
+        run_native_tool_chat, streamed: takes a full messages array (system
+        goes in model_kwargs["system"], not as a message, per the Messages
+        API) plus a tools schema, and yields events as they arrive over SSE
+        instead of buffering the whole round -- so a Claude answer streams
+        live even while native tool-calling is active, matching every other
+        provider (see astream() above for the equivalent without tools).
+
+        Yields `{"type": "text", "text": str}` for each text delta (relay
+        these to the user immediately), then exactly one
+        `{"type": "final", "tool_calls": [{"id", "name", "input"}]}` once the
+        stream ends (empty list if the model didn't call a tool this round).
+        A `tool_use` block's `input` arrives as fragmented `partial_json`
+        deltas and is only assembled into a real dict once its block closes,
+        so tool_calls is never available before the "final" event.
+        """
+        api_kwargs = {**model_kwargs, "messages": messages, "stream": True}
+        if tools:
+            api_kwargs["tools"] = tools
+        api_kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
+        if not self._api_key:
+            raise RuntimeError(
+                "Anthropic API key not configured. Set an API key or paste a Claude "
+                "Pro/Max subscription token (from `claude login`) for the Claude provider."
+            )
+
+        blocks: Dict[int, Dict[str, Any]] = {}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self.base_url}/messages",
+                headers=self._headers(),
+                json=api_kwargs,
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(f"Anthropic API error ({response.status}): {error_text}")
+
+                async for raw_line in response.content:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if not data_str or data_str == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+
+                    etype = event.get("type")
+                    if etype == "content_block_start":
+                        block = event.get("content_block", {})
+                        if block.get("type") == "tool_use":
+                            blocks[event.get("index")] = {
+                                "id": block.get("id"), "name": block.get("name"), "json": "",
+                            }
+                    elif etype == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text")
+                            if text:
+                                yield {"type": "text", "text": text}
+                        elif delta.get("type") == "input_json_delta":
+                            block = blocks.get(event.get("index"))
+                            if block is not None:
+                                block["json"] += delta.get("partial_json", "")
+                    elif etype == "error":
+                        error = event.get("error", {})
+                        raise RuntimeError(
+                            f"Anthropic API stream error: {error.get('message', event)}"
+                        )
+
+        tool_calls = []
+        for block in blocks.values():
+            try:
+                input_data = json.loads(block["json"]) if block["json"] else {}
+            except json.JSONDecodeError:
+                input_data = {}
+            tool_calls.append({"id": block["id"], "name": block["name"], "input": input_data})
+        yield {"type": "final", "tool_calls": tool_calls}
+
+    async def astream(self, api_kwargs: Dict) -> AsyncIterator[str]:
+        """True token-by-token streaming via the Messages API's own `stream:
+        true` SSE mode (api.anthropic.com/v1/messages), used by
+        api/provider_streaming.py so Claude answers appear progressively
+        like every other provider instead of arriving as one buffered blob
+        (the previous behavior via acall(), which does a single
+        non-streaming POST and yields the whole answer at once).
+
+        Anthropic's stream sends one SSE event per line pair (`event: ...`
+        then `data: {...}`); the only events carrying answer text are
+        `content_block_delta` with `delta.type == "text_delta"`. Other event
+        types (message_start, content_block_start/stop, message_delta,
+        message_stop, ping) are ignored here since none of them carry text.
+        """
+        if not self._api_key:
+            raise RuntimeError(
+                "Anthropic API key not configured. Set an API key or paste a Claude "
+                "Pro/Max subscription token (from `claude login`) for the Claude provider."
+            )
+        api_kwargs = {**api_kwargs, "stream": True}
+        api_kwargs.setdefault("max_tokens", DEFAULT_MAX_TOKENS)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{self.base_url}/messages",
+                headers=self._headers(),
+                json=api_kwargs,
+                timeout=aiohttp.ClientTimeout(total=300),
+            ) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    raise RuntimeError(f"Anthropic API error ({response.status}): {error_text}")
+
+                async for raw_line in response.content:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[len("data:"):].strip()
+                    if not data_str or data_str == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("type") == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            text = delta.get("text")
+                            if text:
+                                yield text
+                    elif event.get("type") == "error":
+                        error = event.get("error", {})
+                        raise RuntimeError(
+                            f"Anthropic API stream error: {error.get('message', event)}"
+                        )
 
     async def acall(self, api_kwargs: Dict = None, model_type: ModelType = None) -> Any:
         api_kwargs = api_kwargs or {}

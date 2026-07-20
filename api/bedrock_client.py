@@ -1,8 +1,10 @@
 """AWS Bedrock ModelClient integration."""
 
+import asyncio
 import os
 import json
 import logging
+import threading
 import boto3
 import botocore
 import backoff
@@ -438,6 +440,109 @@ class BedrockClient(ModelClient):
         # For now, just call the sync method
         # In a real implementation, you would use an async library or run the sync method in a thread pool
         return self.call(api_kwargs, model_type)
+
+    def _extract_stream_delta(self, provider: str, chunk: Dict[str, Any]) -> Optional[str]:
+        """One incremental text delta out of a single decoded
+        `invoke_model_with_response_stream` event, in whichever shape that
+        underlying foundation-model family uses -- mirrors the branching
+        `_format_prompt_for_provider`/`_extract_response_text` already do
+        for the non-streaming path above (a structural difference in AWS's
+        own per-provider Bedrock API, not per-model-name special-casing)."""
+        if provider == "anthropic":
+            if chunk.get("type") == "content_block_delta":
+                delta = chunk.get("delta", {})
+                if delta.get("type") == "text_delta":
+                    return delta.get("text")
+            return None
+        if provider == "amazon":
+            return chunk.get("outputText")
+        if provider == "cohere":
+            return chunk.get("text")
+        if provider == "ai21":
+            data = chunk.get("data")
+            return data.get("text") if isinstance(data, dict) else None
+        for key in ("text", "content", "completion", "outputText"):
+            if key in chunk:
+                return chunk[key]
+        return None
+
+    async def astream(self, api_kwargs: Dict = None, model_type: ModelType = None) -> AsyncGenerator[str, None]:
+        """True token-by-token streaming via `invoke_model_with_response_stream`,
+        used by api/provider_streaming.py so Bedrock answers appear
+        progressively instead of as one buffered blob (the previous
+        behavior via acall(), which just calls the fully-synchronous,
+        non-streaming call() above). boto3 has no native asyncio support, so
+        the blocking event iteration runs in a background thread and is
+        bridged into an asyncio.Queue this generator drains -- same shape as
+        api/agent_loop.py's run_agent_chat queue bridge.
+
+        NOTE: not exercised against a live AWS account in this environment
+        (no AWS credentials configured here) -- implemented directly against
+        Bedrock's documented streaming response shape and covered by a
+        mocked unit test, not a live call, unlike the Ollama-based work this
+        session verified end-to-end against real servers.
+        """
+        api_kwargs = api_kwargs or {}
+        if model_type != ModelType.LLM:
+            raise ValueError(f"Model type {model_type} is not supported by AWS Bedrock streaming")
+        if not self.sync_client:
+            raise RuntimeError("AWS Bedrock client not initialized. Check your AWS credentials and region.")
+
+        model_id = api_kwargs.get("model", "anthropic.claude-3-sonnet-20240229-v1:0")
+        provider = self._get_model_provider(model_id)
+        prompt = api_kwargs.get("input", "")
+        messages = api_kwargs.get("messages")
+        request_body = self._format_prompt_for_provider(provider, prompt, messages)
+
+        if "temperature" in api_kwargs:
+            if provider == "anthropic":
+                request_body["temperature"] = api_kwargs["temperature"]
+            elif provider == "amazon":
+                request_body["textGenerationConfig"]["temperature"] = api_kwargs["temperature"]
+            elif provider in ("cohere", "ai21"):
+                request_body["temperature"] = api_kwargs["temperature"]
+        if "top_p" in api_kwargs:
+            if provider == "anthropic":
+                request_body["top_p"] = api_kwargs["top_p"]
+            elif provider == "amazon":
+                request_body["textGenerationConfig"]["topP"] = api_kwargs["top_p"]
+            elif provider == "cohere":
+                request_body["p"] = api_kwargs["top_p"]
+            elif provider == "ai21":
+                request_body["topP"] = api_kwargs["top_p"]
+
+        body = json.dumps(request_body)
+        loop = asyncio.get_event_loop()
+        queue: "asyncio.Queue[Any]" = asyncio.Queue()
+        _DONE = object()
+
+        def worker() -> None:
+            try:
+                response = self.sync_client.invoke_model_with_response_stream(modelId=model_id, body=body)
+                for event in response["body"]:
+                    chunk_bytes = event.get("chunk", {}).get("bytes")
+                    if not chunk_bytes:
+                        continue
+                    try:
+                        chunk_json = json.loads(chunk_bytes)
+                    except json.JSONDecodeError:
+                        continue
+                    text = self._extract_stream_delta(provider, chunk_json)
+                    if text:
+                        loop.call_soon_threadsafe(queue.put_nowait, text)
+            except Exception as e:
+                loop.call_soon_threadsafe(queue.put_nowait, e)
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, _DONE)
+
+        threading.Thread(target=worker, daemon=True).start()
+        while True:
+            item = await queue.get()
+            if item is _DONE:
+                break
+            if isinstance(item, Exception):
+                raise item
+            yield item
 
     def convert_inputs_to_api_kwargs(
         self, input: Any = None, model_kwargs: Dict = None, model_type: ModelType = None

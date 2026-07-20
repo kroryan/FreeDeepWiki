@@ -1,5 +1,34 @@
 """Module containing all prompts used in the FreeDeepWiki project."""
 
+from typing import Optional
+
+
+def prepend_no_think(system_prompt: str, provider: str, model: Optional[str]) -> str:
+    """Prefix `system_prompt` with `/no_think ` -- but ONLY for Ollama models in
+    the Qwen3 family, the only models that recognize `/no_think` as a command
+    to disable their thinking mode for one turn.
+
+    The previous behavior prepended `/no_think ` to EVERY Ollama model's
+    prompt unconditionally (a Qwen3-specific convention), which is exactly
+    the per-model special-casing that breaks unrelated reasoning models:
+    confirmed live with an NVIDIA nemotron-3-super cloud model, which with
+    `/no_think` present emits ONLY reasoning/thinking tokens and never a
+    final answer (every turn), but a complete answer without it. The trailing
+    `/no_think` was already removed for the same reason (commit e8f9c08); the
+    leading prefix is the second half of the same bug. Matching by a `qwen`
+    substring keeps the intended Qwen3 behavior intact while leaving every
+    other Ollama model alone. For any non-Ollama provider the prefix is never
+    applied (no behavior change).
+    """
+    if (
+        provider == "ollama"
+        and isinstance(model, str)
+        and "qwen" in model.lower()
+    ):
+        return "/no_think " + system_prompt
+    return system_prompt
+
+
 # System prompt for RAG
 RAG_SYSTEM_PROMPT = r"""
 You are a code assistant which answers user questions on a Github Repo.
@@ -191,15 +220,15 @@ You are a helpful, knowledgeable conversational assistant with access to the off
 # (headings like "## Research Plan"). Detected and executed by
 # api.agent_loop.sniff_and_relay / run_agent_chat.
 TOOL_CALLING_INSTRUCTIONS = """<tools>
-If the context above is not enough to answer, you may search the {subject} for more information instead of guessing. To do so, your ENTIRE response must be EXACTLY this one line and nothing else:
+If the context above is not enough to answer, you have tools available instead of guessing. To use one, your ENTIRE response must be EXACTLY one line and nothing else:
 
-SEARCH_WIKI: <a short search query>
+{tools_block}
 
-Do NOT narrate or explain that you are about to search, do NOT write things like "Let me search for..." or "I need to look this up" -- either output ONLY that exact line, or skip searching and answer normally. Half-measures (explaining your plan instead of emitting the line, or emitting the line plus commentary) will not trigger a search and the user will see your explanation as if it were the final answer, which is worse than just answering directly.
+Do NOT narrate or explain that you are about to use a tool, do NOT write things like "Let me search for...", "I need to look this up", or "We have a snippet but need the full content, so we should use READ_FILE" -- this applies even when you already have PARTIAL information (e.g. a short snippet) and want more: don't explain that reasoning, just emit the line. Half-measures (explaining your plan instead of emitting the line, or emitting the line plus commentary) will not trigger the tool and the user will see your explanation as if it were the final answer, which is worse than just answering directly. If you're not going to emit the exact line, don't mention tools at all -- just answer with what you have.
 
-Each result is shown as "## Title (ref)" followed by its content. There is no separate "open this link" action -- to follow a link or a "see also" mentioned in one result, issue another SEARCH_WIKI using that page's title (or the term you need) as the query; that reliably reaches the same page. You may chase a chain of related pages this way (search -> a result mentions something else you need -> search for THAT -> ...) up to {max_rounds} times total for this answer -- some questions genuinely need two or three hops through linked pages, not just one search.
-Do not repeat the exact same query if it already came back empty or unhelpful -- rephrase it or move on.
-Stop searching and answer as soon as you have enough information; do not keep searching just because you still have rounds left. If you reach the round limit without a perfect answer, answer with whatever you found rather than leaving the user with nothing.
+Search results are shown as "## Title (ref)" followed by content. There is no separate "open this link" action -- to follow a link or a "see also" mentioned in one result, search again using that page's title (or the term you need) as the query; that reliably reaches the same page. You may chase a chain like this (search -> a result mentions something else you need -> search/read for THAT -> ...) up to {max_rounds} times total for this answer -- some questions genuinely need two or three hops, not just one lookup.
+Do not repeat the exact same tool call if it already came back empty or unhelpful -- rephrase it, try a different tool, or move on.
+Stop using tools and answer as soon as you have enough information; do not keep calling them just because you still have rounds left. If you reach the round limit without a perfect answer, answer with whatever you found rather than leaving the user with nothing.
 </tools>"""
 
 # AI-assisted wiki page edit: rewrites ONE page per the user's instruction.

@@ -156,6 +156,17 @@ class PageEditAIRequest(BaseModel):
     api_key: Optional[str] = Field(None, description="Optional custom API key")
     api_endpoint: Optional[str] = Field(None, description="Optional custom API endpoint")
 
+class FileContentRequest(BaseModel):
+    """Fetches one file's full content for the in-app code viewer (see
+    src/components/CodeViewer.tsx), opened when the user clicks a source
+    file a repo chat cited. POST, not GET-with-query-params, since
+    `token` (a private repo's access token) must never end up in a URL or
+    browser history."""
+    repo_url: str = Field(..., description="Repository URL, or local path for type='local'")
+    repo_type: str = Field(..., description="Repository type: github, gitlab, bitbucket, or local")
+    file_path: str = Field(..., description="Path of the file to read, relative to the repo root")
+    token: Optional[str] = Field(None, description="Personal access token for private repositories")
+
 # --- Model Configuration Models ---
 class Model(BaseModel):
     """
@@ -1096,6 +1107,24 @@ async def edit_wiki_page_ai_stream(request_data: PageEditAIRequest):
             yield f"\nError: {str(e)}"
 
     return StreamingResponse(response_stream(), media_type="text/event-stream")
+
+@app.post("/api/wiki/file_content")
+async def get_wiki_file_content(request_data: FileContentRequest):
+    """Full, untruncated content of one repo file, for the in-app code
+    viewer opened by clicking a "sources consulted" file citation in a repo
+    chat (see api/search_tool.py's format_sources_footer, which renders
+    those citations as `codefile:` links the frontend intercepts instead of
+    navigating). Unlike the chat agent's own READ_FILE tool
+    (api/search_tool.py's read_file), this never truncates -- a human
+    reading the file in a dedicated viewer should see all of it, not a
+    context-budget-limited excerpt."""
+    from api.data_pipeline import get_file_content as _get_file_content
+    try:
+        content = _get_file_content(request_data.repo_url, request_data.file_path, request_data.repo_type, request_data.token)
+    except Exception as e:
+        logger.error(f"Error reading file {request_data.file_path!r}: {e}")
+        raise HTTPException(status_code=404, detail=f"Could not read file: {e}")
+    return {"file_path": request_data.file_path, "content": content}
 
 @app.delete("/api/wiki_cache")
 async def delete_wiki_cache(

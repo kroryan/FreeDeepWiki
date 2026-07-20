@@ -1,5 +1,6 @@
 """OpenAI ModelClient integration."""
 
+import json
 import os
 import base64
 from typing import (
@@ -498,6 +499,64 @@ class OpenAIClient(ModelClient):
             return response.data
         else:
             raise ValueError(f"model_type {model_type} is not supported")
+
+    async def astream_with_tools(self, *, messages: List[Dict], tools: List[Dict], model_kwargs: Dict):
+        """Native tool-calling round-trip for api/agent_loop.py's
+        run_native_tool_chat, streamed: a chat completion with `tools`
+        attached and `stream: true`, yielding events as they arrive instead
+        of buffering the whole round -- so an answer streams live even
+        while native tool-calling is active, matching every other provider.
+
+        Every OpenAI-compatible provider this app supports via this client
+        (openai, openai_custom, litellm -- see NATIVE_TOOL_PROVIDERS in
+        api/search_tool.py) speaks this same streamed request/response
+        shape, so this one method covers all of them.
+
+        Yields `{"type": "text", "text": str}` for each content delta
+        (relay these to the user immediately), then exactly one
+        `{"type": "final", "tool_calls": [{"id", "name", "arguments"}]}`
+        once the stream ends (empty list if no tool was called this round).
+        A tool call's `arguments` string arrives fragmented across many
+        deltas and is only parsed into a dict once the stream closes, so
+        tool_calls is never available before the "final" event.
+        """
+        if self.async_client is None:
+            self.async_client = self.init_async_client()
+        api_kwargs = {**model_kwargs, "messages": messages, "stream": True}
+        if tools:
+            api_kwargs["tools"] = tools
+        stream = await self.async_client.chat.completions.create(**api_kwargs)
+
+        tool_call_acc: Dict[int, Dict[str, Any]] = {}
+        async for chunk in stream:
+            choices = getattr(chunk, "choices", [])
+            if not choices:
+                continue
+            delta = getattr(choices[0], "delta", None)
+            if delta is None:
+                continue
+            text = getattr(delta, "content", None)
+            if text:
+                yield {"type": "text", "text": text}
+            for tc in (getattr(delta, "tool_calls", None) or []):
+                entry = tool_call_acc.setdefault(tc.index, {"id": None, "name": None, "arguments": ""})
+                if tc.id:
+                    entry["id"] = tc.id
+                func = getattr(tc, "function", None)
+                if func is not None:
+                    if func.name:
+                        entry["name"] = func.name
+                    if func.arguments:
+                        entry["arguments"] += func.arguments
+
+        tool_calls = []
+        for entry in tool_call_acc.values():
+            try:
+                arguments = json.loads(entry["arguments"]) if entry["arguments"] else {}
+            except (json.JSONDecodeError, TypeError):
+                arguments = {}
+            tool_calls.append({"id": entry["id"], "name": entry["name"], "arguments": arguments})
+        yield {"type": "final", "tool_calls": tool_calls}
 
     @backoff.on_exception(
         backoff.expo,

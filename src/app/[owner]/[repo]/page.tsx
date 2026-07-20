@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-unused-vars */
 'use client';
 
-import Ask from '@/components/Ask';
+import ChatWidget from '@/components/ChatWidget';
 import Markdown from '@/components/Markdown';
 import ModelSelectionModal, { AppliedModelSelection } from '@/components/ModelSelectionModal';
 import ThemeToggle from '@/components/theme-toggle';
@@ -16,7 +16,7 @@ import { normalizeWikiPageCount } from '@/utils/wikiPageCount';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FaBitbucket, FaBookOpen, FaComments, FaDownload, FaEdit, FaExclamationTriangle, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHistory, FaHome, FaMagic, FaSave, FaSync, FaTimes, FaTrash } from 'react-icons/fa';
+import { FaBitbucket, FaBookOpen, FaDownload, FaEdit, FaExclamationTriangle, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHistory, FaHome, FaMagic, FaSave, FaSync, FaTimes, FaTrash } from 'react-icons/fa';
 // Define the WikiSection and WikiStructure types directly in this file
 // since the imported types don't have the sections and rootSections properties
 interface WikiSection {
@@ -342,10 +342,6 @@ export default function RepoWikiPage() {
   const [wikiReleases, setWikiReleases] = useState<WikiRelease[]>([]);
   const [selectedWikiVersion, setSelectedWikiVersion] = useState<number | null>(null);
 
-  // State for Ask modal
-  const [isAskModalOpen, setIsAskModalOpen] = useState(false);
-  const askComponentRef = useRef<{ clearConversation: () => void } | null>(null);
-
   // Authentication state
   const [authRequired, setAuthRequired] = useState<boolean>(false);
   const [authCode, setAuthCode] = useState<string>('');
@@ -399,23 +395,6 @@ export default function RepoWikiPage() {
     }
   }, [currentPageId]);
 
-  // close the modal when escape is pressed
-  useEffect(() => {
-    const handleEsc = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setIsAskModalOpen(false);
-      }
-    };
-
-    if (isAskModalOpen) {
-      window.addEventListener('keydown', handleEsc);
-    }
-
-    // Cleanup on unmount or when modal closes
-    return () => {
-      window.removeEventListener('keydown', handleEsc);
-    };
-  }, [isAskModalOpen]);
 
   // Fetch authentication status on component mount
   useEffect(() => {
@@ -2796,54 +2775,19 @@ IMPORTANT:
         ) : null}
       </main>
 
-      {/* Floating Chat Button */}
       {!isLoading && wikiStructure && (
-        <button
-          onClick={() => setIsAskModalOpen(true)}
-          className={`fixed bottom-6 right-6 w-14 h-14 rounded-full bg-[var(--accent-primary)] text-black shadow-[0_0_20px_var(--shadow-color)] flex items-center justify-center hover:scale-105 transition-all z-50 ${isAskModalOpen ? 'opacity-0 pointer-events-none scale-90' : 'opacity-100'}`}
-          aria-label={messages.ask?.title || 'Ask about this repository'}
-        >
-          <FaComments className="text-xl" />
-        </button>
+        <ChatWidget
+          repoInfo={effectiveRepoInfo}
+          provider={selectedProviderState}
+          model={selectedModelState}
+          isCustomModel={isCustomSelectedModelState}
+          customModel={customSelectedModelState}
+          language={language}
+          currentPageId={currentPageId}
+          title={messages.ask?.title || 'Repository chat'}
+          fabAriaLabel={messages.ask?.title || 'Ask about this repository'}
+        />
       )}
-
-      {/* Ask floating widget - anchored bottom-right, doesn't cover the wiki */}
-      <div
-        className={`fixed bottom-6 right-6 z-50 w-[calc(100vw-2rem)] sm:w-[420px] h-[min(680px,calc(100vh-6rem))] max-h-[calc(100vh-6rem)] flex flex-col rounded-xl border border-[var(--border-color)] bg-[var(--card-bg)] shadow-[0_8px_40px_rgba(0,0,0,0.35),0_0_0_1px_var(--border-color)] backdrop-blur-xl overflow-hidden origin-bottom-right transition-all duration-250 ease-out ${
-          isAskModalOpen
-            ? 'opacity-100 scale-100 translate-y-0'
-            : 'opacity-0 scale-95 translate-y-4 pointer-events-none'
-        }`}
-        aria-hidden={!isAskModalOpen}
-      >
-        {/* Neon top accent line, matching the sidebar/card treatment elsewhere */}
-        <div className="h-[2px] w-full shrink-0 bg-gradient-to-r from-[var(--accent-primary)] via-[var(--accent-secondary)] to-transparent" />
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)] shrink-0">
-          <span className="text-sm font-semibold font-mono text-[var(--foreground)] flex items-center gap-2">
-            <FaComments className="text-[var(--accent-primary)]" />
-            {messages.ask?.title || 'Repository chat'}
-          </span>
-          <button
-            onClick={() => setIsAskModalOpen(false)}
-            className="text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors rounded-full p-1.5 hover:bg-[var(--accent-primary)]/10"
-            aria-label="Close"
-          >
-            <FaTimes className="text-base" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto min-h-0">
-          <Ask
-            repoInfo={effectiveRepoInfo}
-            provider={selectedProviderState}
-            model={selectedModelState}
-            isCustomModel={isCustomSelectedModelState}
-            customModel={customSelectedModelState}
-            language={language}
-            currentPageId={currentPageId}
-            onRef={(ref) => (askComponentRef.current = ref)}
-          />
-        </div>
-      </div>
 
       <ModelSelectionModal
         isOpen={isModelSelectionModalOpen}

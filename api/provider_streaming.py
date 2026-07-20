@@ -65,10 +65,11 @@ async def stream_provider_response(
         # cloud model, which produced only "thinking" output and zero
         # actual content with the suffix present, every time, and a normal
         # complete answer with it removed. The leading "/no_think
-        # {system_prompt}" prefix already added by every caller (see
-        # websocket_wiki.py / simple_chat.py) applies uniformly to every
-        # provider including this one, so nothing model-specific is lost
-        # by dropping the extra suffix here.
+        # {system_prompt}" prefix added by the chat callers is itself
+        # Qwen3-only via api.prompts.prepend_no_think (the second half of
+        # the same bug: the leading prefix broke nemotron the same way the
+        # trailing suffix did), so nothing model-specific reaches this
+        # branch for non-Qwen models anymore.
         model = OllamaClient()
         model_kwargs = {
             "model": model_config_kwargs.get("model", requested_model),
@@ -157,9 +158,12 @@ async def stream_provider_response(
             input=prompt, model_kwargs=model_kwargs, model_type=ModelType.LLM
         )
         try:
-            logger.info("Making OpenRouter API call")
-            response = await model.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
-            async for chunk in response:
+            # astream() gives real token-by-token output; acall() (used
+            # elsewhere for wiki_structure XML generation) deliberately
+            # forces a single buffered response instead, so it's not reused
+            # here -- see OpenRouterClient.astream's docstring.
+            logger.info("Making OpenRouter API call (SSE stream)")
+            async for chunk in model.astream(api_kwargs):
                 yield chunk
         except Exception as e_openrouter:
             logger.error(f"Error with OpenRouter API: {str(e_openrouter)}")
@@ -222,9 +226,14 @@ async def stream_provider_response(
             input=prompt, model_kwargs=model_kwargs, model_type=ModelType.LLM
         )
         try:
-            logger.info("Making Anthropic API call")
-            response = await model.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
-            async for chunk in response:
+            logger.info("Making Anthropic API call (SSE stream)")
+            # astream() gives real token-by-token output via the Messages
+            # API's own stream:true mode -- the previous acall()-based path
+            # did one buffered, non-streaming POST and yielded the entire
+            # answer as a single chunk, so the UI never showed progressive
+            # generation for Claude the way it does for every other
+            # provider.
+            async for chunk in model.astream(api_kwargs):
                 if chunk:
                     yield chunk
         except Exception as e_claude:
@@ -283,12 +292,13 @@ async def stream_provider_response(
             input=prompt, model_kwargs=model_kwargs, model_type=ModelType.LLM
         )
         try:
-            logger.info("Making AWS Bedrock API call")
-            response = await model.acall(api_kwargs=api_kwargs, model_type=ModelType.LLM)
-            if isinstance(response, str):
-                yield response
-            else:
-                yield str(response)
+            logger.info("Making AWS Bedrock API call (streaming)")
+            # astream() gives real token-by-token output via
+            # invoke_model_with_response_stream; acall() (a thin wrapper
+            # over the fully-synchronous, non-streaming call()) is not used
+            # here anymore -- see BedrockClient.astream's docstring.
+            async for chunk in model.astream(api_kwargs=api_kwargs, model_type=ModelType.LLM):
+                yield chunk
         except Exception as e_bedrock:
             logger.error(f"Error with AWS Bedrock API: {str(e_bedrock)}")
             yield (

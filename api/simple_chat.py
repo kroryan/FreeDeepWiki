@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from api.agent_loop import MAX_TOOL_ROUNDS, run_agent_chat
+from api.agent_loop import MAX_TOOL_ROUNDS, run_agent_chat, run_native_tool_chat
 from api.chat_models import ChatCompletionRequest, ChatMessage  # noqa: F401 (ChatMessage re-exported for callers)
 from api.config import get_model_config, configs, OPENROUTER_API_KEY, OPENAI_API_KEY, LITELLM_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 from api.data_pipeline import count_tokens, get_file_content
@@ -20,6 +20,7 @@ from api.prompts import (
     SIMPLE_CHAT_SYSTEM_PROMPT,
     SIMPLE_CHAT_SYSTEM_PROMPT_ZIM,
     TOOL_CALLING_INSTRUCTIONS,
+    prepend_no_think,
 )
 
 # Configure logging
@@ -193,13 +194,16 @@ async def chat_completions_stream(request: ChatCompletionRequest):
         # api/agent_loop.py) is opt-out via the request flag and an env var
         # killswitch, and never runs for Deep Research. Shared with
         # websocket_wiki.py so the two transports can't drift on this.
-        tool_calling_enabled, search_fn = search_tool.resolve_tool_calling(
+        tool_calling_enabled, tools = search_tool.resolve_tool_calling(
             enable_tool_calling=request.enable_tool_calling,
             is_deep_research=is_deep_research,
             is_zim=is_zim,
             zim_path=request.repo_url if is_zim else None,
             request_rag=request_rag,
             language=request.language,
+            repo_url=request.repo_url if not is_zim else None,
+            repo_type=request.type,
+            token=request.token,
             refs_sink=collected_refs,
         )
 
@@ -359,34 +363,51 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                 if not isinstance(turn_id, int) and hasattr(turn, 'user_query') and hasattr(turn, 'assistant_response'):
                     conversation_history += f"<turn>\n<user>{turn.user_query.query_str}</user>\n<assistant>{turn.assistant_response.response_str}</assistant>\n</turn>\n"
 
-        # Create the prompt with context
-        prompt = f"/no_think {system_prompt}\n\n"
-
+        # Shared context block (conversation history + current file + RAG/ZIM
+        # context), used both by the textual prompt below AND by the native
+        # tool-calling path (run_native_tool_chat), which needs the same
+        # material but as a plain user turn -- its system prompt is passed
+        # separately, and it never needs the textual TOOL_CALLING_INSTRUCTIONS
+        # block since the tool schema itself (not prompted-in text) is what
+        # drives tool calls for those providers.
+        context_block = ""
         if conversation_history:
-            prompt += f"<conversation_history>\n{conversation_history}</conversation_history>\n\n"
+            context_block += f"<conversation_history>\n{conversation_history}</conversation_history>\n\n"
 
         # Check if filePath is provided and fetch file content if it exists
         if file_content:
             # Add file content to the prompt after conversation history
-            prompt += f"<currentFileContent path=\"{request.filePath}\">\n{file_content}\n</currentFileContent>\n\n"
+            context_block += f"<currentFileContent path=\"{request.filePath}\">\n{file_content}\n</currentFileContent>\n\n"
 
         # Only include context if it's not empty
         CONTEXT_START = "<START_OF_CONTEXT>"
         CONTEXT_END = "<END_OF_CONTEXT>"
         if context_text.strip():
-            prompt += f"{CONTEXT_START}\n{context_text}\n{CONTEXT_END}\n\n"
+            context_block += f"{CONTEXT_START}\n{context_text}\n{CONTEXT_END}\n\n"
         else:
             # Add a note that we're skipping RAG due to size constraints or because it's the isolated API
             logger.info("No context available from RAG")
-            prompt += "<note>Answering without retrieval augmentation.</note>\n\n"
+            context_block += "<note>Answering without retrieval augmentation.</note>\n\n"
+
+        tool_subject = "ZIM archive" if is_zim else "repository"
+
+        # Create the prompt with context. `/no_think` is only meaningful for
+        # Qwen3-family Ollama models (see prepend_no_think) -- injecting it for
+        # every Ollama model silently breaks reasoning models like nemotron-3-super.
+        prompt = f"{prepend_no_think(system_prompt, request.provider, request.model)}\n\n" + context_block
 
         if tool_calling_enabled:
             prompt += TOOL_CALLING_INSTRUCTIONS.format(
-                subject="ZIM archive" if is_zim else "repository",
+                subject=tool_subject,
+                tools_block=search_tool.build_tools_block(tools, tool_subject),
                 max_rounds=MAX_TOOL_ROUNDS,
             ) + "\n\n"
 
         prompt += f"<query>\n{query}\n</query>\n\nAssistant: "
+
+        # Same context + query, without the textual tool-calling block or
+        # the /no_think prefix -- used only for the native tool-calling path.
+        native_user_prompt = context_block + f"<query>\n{query}\n</query>"
 
         model_config = get_model_config(request.provider, request.model)["model_kwargs"]
 
@@ -405,12 +426,29 @@ async def chat_completions_stream(request: ChatCompletionRequest):
             logger.warning("AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY not configured, but continuing with request")
 
         # Create a streaming response. When tool calling is enabled,
-        # run_agent_chat wraps stream_provider_response with the SEARCH_WIKI
-        # sniff-and-relay loop (api/agent_loop.py); otherwise this is the
-        # original single-shot stream.
+        # providers with a real structured tool-calling API
+        # (search_tool.NATIVE_TOOL_PROVIDERS) go through run_native_tool_chat
+        # (schema-driven, still real live streaming -- see api/agent_loop.py);
+        # every other provider uses run_agent_chat's textual SEARCH_WIKI:
+        # sniff-and-relay convention instead. With tool calling off, this is
+        # the original single-shot stream.
         async def response_stream():
             try:
-                if tool_calling_enabled:
+                if tool_calling_enabled and request.provider in search_tool.NATIVE_TOOL_PROVIDERS:
+                    stream = run_native_tool_chat(
+                        provider=request.provider,
+                        requested_model=request.model,
+                        system_prompt=system_prompt,
+                        user_prompt=native_user_prompt,
+                        model_config_kwargs=model_config,
+                        api_key=request.api_key,
+                        api_endpoint=request.api_endpoint,
+                        tools=tools,
+                        tool_labels=search_tool.TOOL_LABELS,
+                        tool_schemas_anthropic=search_tool.build_tool_schemas_anthropic(tools, tool_subject),
+                        tool_schemas_openai=search_tool.build_tool_schemas_openai(tools, tool_subject),
+                    )
+                elif tool_calling_enabled:
                     stream = run_agent_chat(
                         provider=request.provider,
                         requested_model=request.model,
@@ -418,7 +456,8 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                         model_config_kwargs=model_config,
                         api_key=request.api_key,
                         api_endpoint=request.api_endpoint,
-                        search_fn=search_fn,
+                        tools=tools,
+                        tool_labels=search_tool.TOOL_LABELS,
                     )
                 else:
                     stream = stream_provider_response(
@@ -447,7 +486,7 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                     logger.warning("Token limit exceeded, retrying without context")
                     try:
                         # Create a simplified prompt without context
-                        simplified_prompt = f"/no_think {system_prompt}\n\n"
+                        simplified_prompt = f"{prepend_no_think(system_prompt, request.provider, request.model)}\n\n"
                         if conversation_history:
                             simplified_prompt += f"<conversation_history>\n{conversation_history}</conversation_history>\n\n"
 
@@ -457,9 +496,6 @@ async def chat_completions_stream(request: ChatCompletionRequest):
 
                         simplified_prompt += "<note>Answering without retrieval augmentation due to input size constraints.</note>\n\n"
                         simplified_prompt += f"<query>\n{query}\n</query>\n\nAssistant: "
-
-                        if request.provider == "ollama":
-                            simplified_prompt += " /no_think"
 
                         # Google's original fallback branch recomputed model_config
                         # from scratch instead of reusing the outer one; every other

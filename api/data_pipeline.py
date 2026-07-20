@@ -704,13 +704,39 @@ def get_bitbucket_file_content(repo_url: str, file_path: str, access_token: str 
         raise ValueError(f"Failed to get file content: {str(e)}")
 
 
+def get_local_file_content(repo_path: str, file_path: str) -> str:
+    """Read a file's content directly from a local repository directory on
+    disk. Used for repo_type == 'local' (and any other non-github/gitlab/
+    bitbucket type), where repo_url doubles as a filesystem path -- the
+    same convention DatabaseManager.prepare_database already uses to
+    decide "local" vs. "clone from URL" (just "doesn't start with
+    http(s)://", see prepare_database above).
+
+    file_path is resolved relative to repo_path and validated to stay
+    inside it, so a crafted "../../etc/passwd" can't escape the repo root.
+    """
+    repo_root = os.path.abspath(repo_path)
+    full_path = os.path.abspath(os.path.join(repo_root, file_path))
+    if full_path != repo_root and not full_path.startswith(repo_root + os.sep):
+        raise ValueError(f"File path '{file_path}' resolves outside the repository root")
+    if not os.path.isfile(full_path):
+        raise ValueError(f"File not found: {file_path}")
+    try:
+        with open(full_path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError as e:
+        raise ValueError(f"Error reading file {file_path}: {e}")
+
+
 def get_file_content(repo_url: str, file_path: str, repo_type: str = None, access_token: str = None) -> str:
     """
-    Retrieves the content of a file from a Git repository (GitHub or GitLab).
+    Retrieves the content of a file from a Git repository (GitHub, GitLab,
+    Bitbucket) or, for a local repository, directly from disk.
 
     Args:
         repo_type (str): Type of repository
-        repo_url (str): The URL of the repository
+        repo_url (str): The URL of the repository, or its local filesystem
+            path when repo_type == 'local'
         file_path (str): The path to the file within the repository
         access_token (str, optional): Access token for private repositories
 
@@ -727,7 +753,7 @@ def get_file_content(repo_url: str, file_path: str, repo_type: str = None, acces
     elif repo_type == "bitbucket":
         return get_bitbucket_file_content(repo_url, file_path, access_token)
     else:
-        raise ValueError("Unsupported repository type. Only GitHub, GitLab, and Bitbucket are supported.")
+        return get_local_file_content(repo_url, file_path)
 
 class DatabaseManager:
     """

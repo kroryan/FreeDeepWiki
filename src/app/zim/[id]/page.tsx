@@ -2,10 +2,10 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { FaComments, FaHome, FaSearch, FaTimes } from 'react-icons/fa';
+import React, { useEffect, useMemo, useState } from 'react';
+import { FaHome, FaSearch } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
-import Ask from '@/components/Ask';
+import ChatWidget from '@/components/ChatWidget';
 import RepoInfo from '@/types/repoinfo';
 import { useLanguage } from '@/contexts/LanguageContext';
 
@@ -43,8 +43,6 @@ export default function ZimReaderPage() {
   const [isIndexLoading, setIsIndexLoading] = useState(true);
   const [indexTruncated, setIndexTruncated] = useState(false);
   const [currentPath, setCurrentPath] = useState<string | null>(null);
-  const [isAskOpen, setIsAskOpen] = useState(false);
-  const askComponentRef = useRef<{ clearConversation: () => void } | null>(null);
 
   // `repo_url` for a .zim chat is the archive's own absolute path (mirrors
   // how `type: 'local'` already repurposes it as a filesystem path, see
@@ -238,53 +236,16 @@ export default function ZimReaderPage() {
         </div>
       </div>
 
-      {/* Floating Chat Button -- same pattern as the repo wiki page's Ask
-          widget. Context is scoped to `currentPath` (see AskProps.currentPageId
-          / api.search_tool.build_zim_context) instead of the whole archive,
+      {/* Context is scoped to `currentPath` (see AskProps.currentPageId /
+          api.search_tool.build_zim_context) instead of the whole archive,
           which can hold millions of entries. */}
-      {zimRepoInfo && (
-        <button
-          onClick={() => setIsAskOpen(true)}
-          className={`fixed bottom-6 right-6 w-14 h-14 rounded-full bg-[var(--accent-primary)] text-black shadow-[0_0_20px_var(--shadow-color)] flex items-center justify-center hover:scale-105 transition-all z-50 ${isAskOpen ? 'opacity-0 pointer-events-none scale-90' : 'opacity-100'}`}
-          aria-label={messages.ask?.title || 'Ask about this archive'}
-        >
-          <FaComments className="text-xl" />
-        </button>
-      )}
-
-      <div
-        className={`fixed bottom-6 right-6 z-50 w-[calc(100vw-2rem)] sm:w-[420px] h-[min(680px,calc(100vh-6rem))] max-h-[calc(100vh-6rem)] flex flex-col rounded-xl border border-[var(--border-color)] bg-[var(--card-bg)] shadow-[0_8px_40px_rgba(0,0,0,0.35),0_0_0_1px_var(--border-color)] backdrop-blur-xl overflow-hidden origin-bottom-right transition-all duration-250 ease-out ${
-          isAskOpen
-            ? 'opacity-100 scale-100 translate-y-0'
-            : 'opacity-0 scale-95 translate-y-4 pointer-events-none'
-        }`}
-        aria-hidden={!isAskOpen}
-      >
-        <div className="h-[2px] w-full shrink-0 bg-gradient-to-r from-[var(--accent-primary)] via-[var(--accent-secondary)] to-transparent" />
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border-color)] shrink-0">
-          <span className="text-sm font-semibold font-mono text-[var(--foreground)] flex items-center gap-2">
-            <FaComments className="text-[var(--accent-primary)]" />
-            {messages.ask?.title || 'Archive chat'}
-          </span>
-          <button
-            onClick={() => setIsAskOpen(false)}
-            className="text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors rounded-full p-1.5 hover:bg-[var(--accent-primary)]/10"
-            aria-label="Close"
-          >
-            <FaTimes className="text-base" />
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto min-h-0">
-          {zimRepoInfo && (
-            <Ask
-              repoInfo={zimRepoInfo}
-              language={language}
-              currentPageId={currentPath ?? undefined}
-              onRef={(ref) => (askComponentRef.current = ref)}
-            />
-          )}
-        </div>
-      </div>
+      <ChatWidget
+        repoInfo={zimRepoInfo}
+        language={language}
+        currentPageId={currentPath ?? undefined}
+        title={messages.ask?.title || 'Archive chat'}
+        fabAriaLabel={messages.ask?.title || 'Ask about this archive'}
+      />
     </div>
   );
 }

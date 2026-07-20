@@ -13,10 +13,18 @@ from api.config import (
     AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY,
 )
-from api.agent_loop import MAX_TOOL_ROUNDS, run_agent_chat
+from api.agent_loop import MAX_TOOL_ROUNDS, run_agent_chat, run_native_tool_chat
 from api.chat_models import ChatCompletionRequest, ChatMessage  # noqa: F401 (ChatMessage re-exported for callers)
 from api.data_pipeline import count_tokens, get_file_content
-from api.prompts import TOOL_CALLING_INSTRUCTIONS
+from api.prompts import (
+    DEEP_RESEARCH_FIRST_ITERATION_PROMPT,
+    DEEP_RESEARCH_FINAL_ITERATION_PROMPT,
+    DEEP_RESEARCH_INTERMEDIATE_ITERATION_PROMPT,
+    SIMPLE_CHAT_SYSTEM_PROMPT,
+    SIMPLE_CHAT_SYSTEM_PROMPT_ZIM,
+    TOOL_CALLING_INSTRUCTIONS,
+    prepend_no_think,
+)
 from api.provider_streaming import stream_provider_response
 from api.rag import RAG
 from api import search_tool
@@ -204,13 +212,16 @@ async def handle_websocket_chat(websocket: WebSocket):
         # killswitch, and never runs for Deep Research -- that flow already
         # has its own multi-iteration structure and prompts. Shared with
         # simple_chat.py so the two transports can't drift on this.
-        tool_calling_enabled, search_fn = search_tool.resolve_tool_calling(
+        tool_calling_enabled, tools = search_tool.resolve_tool_calling(
             enable_tool_calling=request.enable_tool_calling,
             is_deep_research=is_deep_research,
             is_zim=is_zim,
             zim_path=request.repo_url if is_zim else None,
             request_rag=request_rag,
             language=request.language,
+            repo_url=request.repo_url if not is_zim else None,
+            repo_type=request.type,
+            token=request.token,
             refs_sink=collected_refs,
         )
 
@@ -310,7 +321,10 @@ async def handle_websocket_chat(websocket: WebSocket):
         supported_langs = configs["lang_config"]["supported_languages"]
         language_name = supported_langs.get(language_code, "English")
 
-        # Create system prompt
+        # Create system prompt -- shared templates from api/prompts.py, same
+        # ones simple_chat.py uses, so the two transports can't drift on
+        # wording (they used to carry independent copies of all four of
+        # these prompts).
         if is_deep_research:
             # Check if this is the first iteration
             is_first_iteration = research_iteration == 1
@@ -319,126 +333,24 @@ async def handle_websocket_chat(websocket: WebSocket):
             is_final_iteration = research_iteration >= 5
 
             if is_first_iteration:
-                system_prompt = f"""<role>
-You are an expert analyst examining the {subject_kind}: {repo_url} ({repo_name}).
-You are conducting a multi-turn Deep Research process to thoroughly investigate the specific topic in the user's query.
-Your goal is to provide detailed, focused information EXCLUSIVELY about this topic.
-IMPORTANT:You MUST respond in {language_name} language.
-</role>
-
-<guidelines>
-- This is the first iteration of a multi-turn research process focused EXCLUSIVELY on the user's query
-- Start your response with "## Research Plan"
-- Outline your approach to investigating this specific topic
-- If the topic is about a specific file or feature (like "Dockerfile"), focus ONLY on that file or feature
-- Clearly state the specific topic you're researching to maintain focus throughout all iterations
-- Identify the key aspects you'll need to research
-- Provide initial findings based on the information available
-- End with "## Next Steps" indicating what you'll investigate in the next iteration
-- Do NOT provide a final conclusion yet - this is just the beginning of the research
-- Do NOT include general repository information unless directly relevant to the query
-- Focus EXCLUSIVELY on the specific topic being researched - do not drift to related topics
-- Your research MUST directly address the original question
-- NEVER respond with just "Continue the research" as an answer - always provide substantive research findings
-- Remember that this topic will be maintained across all research iterations
-</guidelines>
-
-<style>
-- Be concise but thorough
-- Use markdown formatting to improve readability
-- Cite specific files and code sections when relevant
-</style>"""
+                system_prompt = DEEP_RESEARCH_FIRST_ITERATION_PROMPT.format(
+                    subject=subject_kind, repo_url=repo_url, repo_name=repo_name, language_name=language_name
+                )
             elif is_final_iteration:
-                system_prompt = f"""<role>
-You are an expert analyst examining the {subject_kind}: {repo_url} ({repo_name}).
-You are in the final iteration of a Deep Research process focused EXCLUSIVELY on the latest user query.
-Your goal is to synthesize all previous findings and provide a comprehensive conclusion that directly addresses this specific topic and ONLY this topic.
-IMPORTANT:You MUST respond in {language_name} language.
-</role>
-
-<guidelines>
-- This is the final iteration of the research process
-- CAREFULLY review the entire conversation history to understand all previous findings
-- Synthesize ALL findings from previous iterations into a comprehensive conclusion
-- Start with "## Final Conclusion"
-- Your conclusion MUST directly address the original question
-- Stay STRICTLY focused on the specific topic - do not drift to related topics
-- Include specific code references and implementation details related to the topic
-- Highlight the most important discoveries and insights about this specific functionality
-- Provide a complete and definitive answer to the original question
-- Do NOT include general repository information unless directly relevant to the query
-- Focus exclusively on the specific topic being researched
-- NEVER respond with "Continue the research" as an answer - always provide a complete conclusion
-- If the topic is about a specific file or feature (like "Dockerfile"), focus ONLY on that file or feature
-- Ensure your conclusion builds on and references key findings from previous iterations
-</guidelines>
-
-<style>
-- Be concise but thorough
-- Use markdown formatting to improve readability
-- Cite specific files and code sections when relevant
-- Structure your response with clear headings
-- End with actionable insights or recommendations when appropriate
-</style>"""
+                system_prompt = DEEP_RESEARCH_FINAL_ITERATION_PROMPT.format(
+                    subject=subject_kind, repo_url=repo_url, repo_name=repo_name,
+                    research_iteration=research_iteration, language_name=language_name
+                )
             else:
-                system_prompt = f"""<role>
-You are an expert analyst examining the {subject_kind}: {repo_url} ({repo_name}).
-You are currently in iteration {research_iteration} of a Deep Research process focused EXCLUSIVELY on the latest user query.
-Your goal is to build upon previous research iterations and go deeper into this specific topic without deviating from it.
-IMPORTANT:You MUST respond in {language_name} language.
-</role>
-
-<guidelines>
-- CAREFULLY review the conversation history to understand what has been researched so far
-- Your response MUST build on previous research iterations - do not repeat information already covered
-- Identify gaps or areas that need further exploration related to this specific topic
-- Focus on one specific aspect that needs deeper investigation in this iteration
-- Start your response with "## Research Update {research_iteration}"
-- Clearly explain what you're investigating in this iteration
-- Provide new insights that weren't covered in previous iterations
-- If this is iteration 3, prepare for a final conclusion in the next iteration
-- Do NOT include general repository information unless directly relevant to the query
-- Focus EXCLUSIVELY on the specific topic being researched - do not drift to related topics
-- If the topic is about a specific file or feature (like "Dockerfile"), focus ONLY on that file or feature
-- NEVER respond with just "Continue the research" as an answer - always provide substantive research findings
-- Your research MUST directly address the original question
-- Maintain continuity with previous research iterations - this is a continuous investigation
-</guidelines>
-
-<style>
-- Be concise but thorough
-- Focus on providing new information, not repeating what's already been covered
-- Use markdown formatting to improve readability
-- Cite specific files and code sections when relevant
-</style>"""
-        elif is_zim:
-            system_prompt = f"""<role>
-You are a helpful, knowledgeable conversational assistant with access to the offline wiki archive "{repo_name}". This archive can cover any topic at all (history, reference material, documentation, etc.) -- you're having a real conversation about its content, not performing a narrow lookup task.
-</role>
-
-<guidelines>
-- Detect the language the user is writing in and respond in THAT language for this reply, even if it differs from the archive's own language or from {language_name} -- match the user, not a fixed setting.
-- Have a natural conversation: answer greetings, meta-questions ("what is this?", "what topics does this cover?"), and follow-ups directly, using the provided context plus your own general knowledge and reasoning -- you are a chat assistant, not a rigid lookup automaton.
-- Ground specific facts in the provided context when it's relevant, but if it doesn't fully cover the question, say what you do know and reason about the rest using your own general knowledge rather than refusing to answer.
-- Never respond with only "I cannot determine this" or pile on hedges and caveats -- give your best helpful answer.
-- Answer directly without unnecessary preamble, filler phrases, or repeating the question back.
-- DO NOT start with markdown headers or ```markdown code fences.
-- Use markdown formatting within your answer (headings, lists, code blocks) where it actually helps.
-</guidelines>"""
+                system_prompt = DEEP_RESEARCH_INTERMEDIATE_ITERATION_PROMPT.format(
+                    subject=subject_kind, repo_url=repo_url, repo_name=repo_name,
+                    research_iteration=research_iteration, language_name=language_name
+                )
         else:
-            system_prompt = f"""<role>
-You are a helpful, knowledgeable coding assistant embedded in the {subject_kind}: {repo_url} ({repo_name}). You have access to the project's source code and documentation as context, and you're having a real conversation with someone working on or exploring this project -- not just answering isolated lookup queries.
-</role>
-
-<guidelines>
-- Detect the language the user is writing in and respond in THAT language for this reply, even if it differs from {language_name} -- match the user, not a fixed setting.
-- Have a natural conversation: answer greetings, meta-questions ("what is this project?", "what does this repo do?"), and follow-ups directly, using the provided context plus your own reasoning -- you are a chat assistant, not a rigid lookup automaton.
-- Ground specific technical claims (how code works, what a file does) in the provided context and cite files/functions when relevant.
-- If the context doesn't fully cover something, say what you do know and reason about the rest -- never respond with only "I cannot determine this" or refuse to engage.
-- Answer directly without unnecessary preamble, filler phrases, or repeating the question back.
-- DO NOT start with markdown headers or ```markdown code fences.
-- Use markdown formatting within your answer (headings, lists, code blocks) where it actually helps.
-</guidelines>"""
+            template = SIMPLE_CHAT_SYSTEM_PROMPT_ZIM if is_zim else SIMPLE_CHAT_SYSTEM_PROMPT
+            system_prompt = template.format(
+                subject=subject_kind, repo_url=repo_url, repo_name=repo_name, language_name=language_name
+            )
 
         # Fetch file content if provided
         file_content = ""
@@ -461,34 +373,51 @@ You are a helpful, knowledgeable coding assistant embedded in the {subject_kind}
                 if not isinstance(turn_id, int) and hasattr(turn, 'user_query') and hasattr(turn, 'assistant_response'):
                     conversation_history += f"<turn>\n<user>{turn.user_query.query_str}</user>\n<assistant>{turn.assistant_response.response_str}</assistant>\n</turn>\n"
 
-        # Create the prompt with context
-        prompt = f"/no_think {system_prompt}\n\n"
-
+        # Shared context block (conversation history + current file + RAG/ZIM
+        # context), used both by the textual prompt below AND by the native
+        # tool-calling path (run_native_tool_chat), which needs the same
+        # material but as a plain user turn -- its system prompt is passed
+        # separately, and it never needs the textual TOOL_CALLING_INSTRUCTIONS
+        # block since the tool schema itself (not prompted-in text) is what
+        # drives tool calls for those providers.
+        context_block = ""
         if conversation_history:
-            prompt += f"<conversation_history>\n{conversation_history}</conversation_history>\n\n"
+            context_block += f"<conversation_history>\n{conversation_history}</conversation_history>\n\n"
 
         # Check if filePath is provided and fetch file content if it exists
         if file_content:
             # Add file content to the prompt after conversation history
-            prompt += f"<currentFileContent path=\"{request.filePath}\">\n{file_content}\n</currentFileContent>\n\n"
+            context_block += f"<currentFileContent path=\"{request.filePath}\">\n{file_content}\n</currentFileContent>\n\n"
 
         # Only include context if it's not empty
         CONTEXT_START = "<START_OF_CONTEXT>"
         CONTEXT_END = "<END_OF_CONTEXT>"
         if context_text.strip():
-            prompt += f"{CONTEXT_START}\n{context_text}\n{CONTEXT_END}\n\n"
+            context_block += f"{CONTEXT_START}\n{context_text}\n{CONTEXT_END}\n\n"
         else:
             # Add a note that we're skipping RAG due to size constraints or because it's the isolated API
             logger.info("No context available from RAG")
-            prompt += "<note>Answering without retrieval augmentation.</note>\n\n"
+            context_block += "<note>Answering without retrieval augmentation.</note>\n\n"
+
+        tool_subject = "ZIM archive" if is_zim else "repository"
+
+        # Create the prompt with context. `/no_think` is only meaningful for
+        # Qwen3-family Ollama models (see prepend_no_think) -- injecting it for
+        # every Ollama model silently breaks reasoning models like nemotron-3-super.
+        prompt = f"{prepend_no_think(system_prompt, request.provider, request.model)}\n\n" + context_block
 
         if tool_calling_enabled:
             prompt += TOOL_CALLING_INSTRUCTIONS.format(
-                subject="ZIM archive" if is_zim else "repository",
+                subject=tool_subject,
+                tools_block=search_tool.build_tools_block(tools, tool_subject),
                 max_rounds=MAX_TOOL_ROUNDS,
             ) + "\n\n"
 
         prompt += f"<query>\n{query}\n</query>\n\nAssistant: "
+
+        # Same context + query, without the textual tool-calling block or
+        # the /no_think prefix -- used only for the native tool-calling path.
+        native_user_prompt = context_block + f"<query>\n{query}\n</query>"
 
         model_config = get_model_config(request.provider, request.model)["model_kwargs"]
 
@@ -546,11 +475,28 @@ You are a helpful, knowledgeable coding assistant embedded in the {subject_kind}
             logger.warning("AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY not configured, but continuing with request")
 
         # Process the response based on the provider. When tool calling is
-        # enabled, run_agent_chat wraps stream_provider_response with the
-        # SEARCH_WIKI sniff-and-relay loop (api/agent_loop.py); otherwise
-        # this is the original single-shot stream.
+        # enabled, providers with a real structured tool-calling API
+        # (search_tool.NATIVE_TOOL_PROVIDERS) go through run_native_tool_chat
+        # (schema-driven, still real live streaming -- see api/agent_loop.py);
+        # every other provider uses run_agent_chat's textual SEARCH_WIKI:
+        # sniff-and-relay convention instead. With tool calling off, this is
+        # the original single-shot stream.
         try:
-            if tool_calling_enabled:
+            if tool_calling_enabled and request.provider in search_tool.NATIVE_TOOL_PROVIDERS:
+                response_stream = run_native_tool_chat(
+                    provider=request.provider,
+                    requested_model=request.model,
+                    system_prompt=system_prompt,
+                    user_prompt=native_user_prompt,
+                    model_config_kwargs=model_config,
+                    api_key=request.api_key,
+                    api_endpoint=request.api_endpoint,
+                    tools=tools,
+                    tool_labels=search_tool.TOOL_LABELS,
+                    tool_schemas_anthropic=search_tool.build_tool_schemas_anthropic(tools, tool_subject),
+                    tool_schemas_openai=search_tool.build_tool_schemas_openai(tools, tool_subject),
+                )
+            elif tool_calling_enabled:
                 response_stream = run_agent_chat(
                     provider=request.provider,
                     requested_model=request.model,
@@ -558,7 +504,8 @@ You are a helpful, knowledgeable coding assistant embedded in the {subject_kind}
                     model_config_kwargs=model_config,
                     api_key=request.api_key,
                     api_endpoint=request.api_endpoint,
-                    search_fn=search_fn,
+                    tools=tools,
+                    tool_labels=search_tool.TOOL_LABELS,
                 )
             else:
                 response_stream = stream_provider_response(
@@ -588,7 +535,7 @@ You are a helpful, knowledgeable coding assistant embedded in the {subject_kind}
                 logger.warning("Token limit exceeded, retrying without context")
                 try:
                     # Create a simplified prompt without context
-                    simplified_prompt = f"/no_think {system_prompt}\n\n"
+                    simplified_prompt = f"{prepend_no_think(system_prompt, request.provider, request.model)}\n\n"
                     if conversation_history:
                         simplified_prompt += f"<conversation_history>\n{conversation_history}</conversation_history>\n\n"
 
