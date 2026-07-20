@@ -159,6 +159,40 @@ export default function Home() {
   const [authCode, setAuthCode] = useState<string>('');
   const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
 
+  // .zim import state
+  const [isZimModalOpen, setIsZimModalOpen] = useState(false);
+  const [zimPath, setZimPath] = useState('');
+  const [zimError, setZimError] = useState<string | null>(null);
+  const [isZimImporting, setIsZimImporting] = useState(false);
+
+  const handleImportZim = async () => {
+    const path = zimPath.trim();
+    if (!path) {
+      setZimError('Please enter the absolute path to a .zim file.');
+      return;
+    }
+    setIsZimImporting(true);
+    setZimError(null);
+    try {
+      const response = await fetch('/api/zim/import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || data.error || 'Failed to import .zim file');
+      }
+      setIsZimModalOpen(false);
+      setZimPath('');
+      router.push(`/zim/${data.id}`);
+    } catch (e: unknown) {
+      setZimError(e instanceof Error ? e.message : 'Failed to import .zim file');
+    } finally {
+      setIsZimImporting(false);
+    }
+  };
+
   // Sync the language context with the selectedLanguage state
   useEffect(() => {
     setLanguage(selectedLanguage);
@@ -457,6 +491,65 @@ export default function Home() {
               </button>
             </div>
           </form>
+
+          <div className="flex justify-center w-full max-w-3xl mt-3">
+            <button
+              type="button"
+              onClick={() => setIsZimModalOpen(true)}
+              className="text-sm text-[var(--muted)] hover:text-[var(--accent-primary)] underline underline-offset-2 transition-colors"
+            >
+              {t('common.importZim') !== 'common.importZim' ? t('common.importZim') : 'Import .zim archive'}
+            </button>
+          </div>
+
+          {isZimModalOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+              <div className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-lg shadow-custom w-full max-w-md p-6 card-japanese">
+                <h3 className="text-lg font-semibold text-[var(--foreground)] mb-2">
+                  Import .zim archive
+                </h3>
+                <p className="text-xs text-[var(--muted)] mb-4">
+                  Enter the absolute path to a .zim file already on this machine (Kiwix / OpenZIM
+                  offline wiki dump). The file is read in place, never uploaded or copied.
+                </p>
+                <input
+                  type="text"
+                  value={zimPath}
+                  onChange={(e) => setZimPath(e.target.value)}
+                  placeholder="/home/user/wikipedia_en_all.zim"
+                  className="input-japanese block w-full px-3 py-2.5 border-[var(--border-color)] rounded-lg bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)] mb-2"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleImportZim();
+                  }}
+                />
+                {zimError && (
+                  <div className="text-[var(--highlight)] text-xs mb-2">{zimError}</div>
+                )}
+                <div className="flex justify-end gap-2 mt-4">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsZimModalOpen(false);
+                      setZimError(null);
+                    }}
+                    className="px-4 py-2 rounded-lg text-sm text-[var(--foreground)] hover:bg-[var(--background)] transition-colors"
+                    disabled={isZimImporting}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleImportZim}
+                    className="btn-japanese px-4 py-2 rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    disabled={isZimImporting}
+                  >
+                    {isZimImporting ? 'Importing...' : 'Import'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Configuration Modal */}
           <ConfigurationModal

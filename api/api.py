@@ -5,7 +5,7 @@ import zipfile
 import logging
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, HTMLResponse
 from typing import List, Optional, Dict, Any, Literal
 import json
 from datetime import datetime
@@ -37,6 +37,8 @@ app.add_middleware(
 
 # Helper function to get the (guaranteed-writable) adalflow root path
 from api.data_root import get_data_root as get_adalflow_default_root_path
+from api import zim_reader
+from api import zim_library
 
 # --- Pydantic Models ---
 class WikiPage(BaseModel):
@@ -1159,6 +1161,25 @@ async def get_processed_projects():
                     continue # Skip this file on error
 
         project_entries = list(newest_projects.values())
+
+        # Mix in imported .zim archives, using the same list shape so the
+        # frontend can render them alongside LLM-generated wikis. A .zim has
+        # no owner/repo/language in the git-repo sense, so those fields are
+        # synthesized: repo_type='zim' is what the frontend uses to route to
+        # /zim/{id} instead of /{owner}/{repo}.
+        for zim_entry in zim_library.list_all():
+            project_entries.append(
+                ProcessedProjectEntry(
+                    id=zim_entry["id"],
+                    owner="zim",
+                    repo=zim_entry["id"],
+                    name=zim_entry["title"],
+                    repo_type="zim",
+                    submittedAt=zim_entry["importedAt"],
+                    language="",
+                )
+            )
+
         # Sort by most recent first
         project_entries.sort(key=lambda p: p.submittedAt, reverse=True)
         logger.info(f"Found {len(project_entries)} processed project entries.")
@@ -1167,3 +1188,147 @@ async def get_processed_projects():
     except Exception as e:
         logger.error(f"Error listing processed projects from {WIKI_CACHE_DIR}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to list processed projects from server cache.")
+
+
+# --- ZIM Archive Import & Reader Endpoints ---
+
+class ZimImportRequest(BaseModel):
+    path: str = Field(..., description="Absolute filesystem path to a .zim file")
+
+
+@app.post("/api/zim/import")
+async def import_zim(request: ZimImportRequest):
+    """Register a local .zim file as a browsable/chattable project.
+
+    The file is never copied or uploaded -- only its absolute path is stored.
+    Validates the path exists and is a well-formed .zim archive before
+    registering it.
+    """
+    path = request.path.strip()
+    if not path:
+        raise HTTPException(status_code=400, detail="No path provided")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=400, detail=f"File not found: {path}")
+
+    try:
+        archive = zim_reader.open_archive(path)
+        metadata = zim_reader.get_metadata(archive)
+    except Exception as e:
+        logger.error(f"Failed to open ZIM file {path}: {e}")
+        raise HTTPException(status_code=400, detail=f"Not a valid .zim file: {e}")
+
+    entry = zim_library.register(
+        path=path,
+        title=metadata["title"],
+        description=metadata["description"],
+        article_count=metadata["articleCount"],
+    )
+    return entry
+
+
+def _get_zim_entry_or_404(zim_id: str) -> zim_library.ZimEntry:
+    entry = zim_library.get(zim_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="ZIM archive not found in library")
+    return entry
+
+
+def _open_zim_or_500(entry: zim_library.ZimEntry):
+    try:
+        return zim_reader.open_archive(entry["path"])
+    except Exception as e:
+        logger.error(f"Failed to open registered ZIM file {entry['path']}: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not open ZIM file: {e}")
+
+
+@app.get("/api/zim/{zim_id}")
+async def get_zim_metadata(zim_id: str):
+    entry = _get_zim_entry_or_404(zim_id)
+    archive = _open_zim_or_500(entry)
+    metadata = zim_reader.get_metadata(archive)
+    return {**entry, **metadata}
+
+
+@app.get("/api/zim/{zim_id}/search")
+async def search_zim(zim_id: str, q: str = Query(..., min_length=1), limit: int = Query(20, ge=1, le=100)):
+    entry = _get_zim_entry_or_404(zim_id)
+    archive = _open_zim_or_500(entry)
+    return zim_reader.search_entries(archive, q, limit=limit)
+
+
+def _rewrite_zim_html(zim_id: str, entry_path: str, html_bytes: bytes) -> str:
+    """Inject a <base> tag so an entry's own relative links/assets
+    ("../../application.css", "../pagination/index") resolve against our raw
+    proxy the same way they would against the ZIM's internal namespace.
+
+    Relative URLs resolve against the *directory* of the current URL, so
+    base must include entry_path's directory, not just the raw-proxy root --
+    otherwise every entry not at the ZIM root (i.e. almost all of them)
+    breaks its own asset paths.
+    """
+    html = html_bytes.decode("utf-8", errors="replace")
+    entry_dir = entry_path.rsplit("/", 1)[0] + "/" if "/" in entry_path else ""
+    base_tag = f'<base href="/api/zim/{zim_id}/raw/{entry_dir}">'
+    if re.search(r"(?i)<head[^>]*>", html):
+        html = re.sub(r"(?i)(<head[^>]*>)", r"\1" + base_tag, html, count=1)
+    else:
+        html = base_tag + html
+    return html
+
+
+@app.get("/api/zim/{zim_id}/entry", response_class=HTMLResponse)
+async def get_zim_entry(zim_id: str, path: str = Query(...)):
+    entry = _get_zim_entry_or_404(zim_id)
+    archive = _open_zim_or_500(entry)
+    try:
+        content, mimetype = zim_reader.get_entry_content(archive, path)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Entry not found: {path}")
+
+    if not mimetype.startswith("text/html"):
+        # Non-HTML main entries (rare) -- send back through the raw proxy path
+        # instead of trying to render them as a page.
+        return Response(content=content, media_type=mimetype)
+
+    html = _rewrite_zim_html(zim_id, path, content)
+    return HTMLResponse(content=html, headers={"X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/api/zim/{zim_id}/raw/{entry_path:path}")
+async def get_zim_raw(zim_id: str, entry_path: str):
+    """Proxy raw bytes of an entry inside the ZIM namespace (images, CSS, JS,
+    linked articles). `entry_path` is resolved entirely inside libzim's own
+    archive namespace -- it is never used to build a filesystem path, so it
+    cannot escape to the real filesystem regardless of its contents.
+
+    HTML entries reached this way (the user clicked an in-page link to another
+    article, which resolves through <base> to this raw route rather than
+    /entry) get the same <base> rewrite as /entry, so their own relative
+    links/assets keep resolving correctly -- otherwise browsing would break
+    one hop after the first click.
+    """
+    entry = _get_zim_entry_or_404(zim_id)
+    archive = _open_zim_or_500(entry)
+    try:
+        content, mimetype = zim_reader.get_entry_content(archive, entry_path)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"Entry not found: {entry_path}")
+
+    if mimetype.startswith("text/html"):
+        html = _rewrite_zim_html(zim_id, entry_path, content)
+        return HTMLResponse(content=html, headers={"X-Content-Type-Options": "nosniff"})
+
+    return Response(
+        content=content,
+        media_type=mimetype,
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.delete("/api/zim/{zim_id}")
+async def delete_zim(zim_id: str):
+    """Unregister a .zim from the library. Never deletes the underlying file."""
+    entry = _get_zim_entry_or_404(zim_id)
+    zim_reader.close_archive(entry["path"])
+    zim_library.unregister(zim_id)
+    return {"message": "ZIM archive removed from library"}

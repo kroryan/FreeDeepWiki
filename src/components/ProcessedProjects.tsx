@@ -205,7 +205,7 @@ export default function ProcessedProjects({
                   <FaTimes className="h-4 w-4" />
                 </button>
                 <Link
-                  href={`/${project.owner}/${project.repo}?type=${project.repo_type}&language=${project.language}`}
+                  href={project.repo_type === 'zim' ? `/zim/${project.id}` : `/${project.owner}/${project.repo}?type=${project.repo_type}&language=${project.language}`}
                   className="block"
                 >
                   <h3 className="text-lg font-semibold text-[var(--link-color)] hover:underline mb-2 line-clamp-2">
@@ -235,7 +235,7 @@ export default function ProcessedProjects({
                   <FaTimes className="h-4 w-4" />
                 </button>
                 <Link
-                  href={`/${project.owner}/${project.repo}?type=${project.repo_type}&language=${project.language}`}
+                  href={project.repo_type === 'zim' ? `/zim/${project.id}` : `/${project.owner}/${project.repo}?type=${project.repo_type}&language=${project.language}`}
                   className="flex items-center justify-between"
                 >
                   <div className="flex-1 min-w-0">
