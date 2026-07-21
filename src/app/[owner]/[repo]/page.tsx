@@ -381,7 +381,6 @@ export default function RepoWikiPage() {
   const vulnClientEnabled = searchParams.get('vuln_client') !== '0';
   const vulnServerEnabled = searchParams.get('vuln_server') !== '0';
   const vulnDepsEnabled = searchParams.get('vuln_deps') !== '0';
-  const vulnObsidianInclude = searchParams.get('vuln_obsidian') === '1';
   const nvdKeyParam = searchParams.get('nvd_key')
     ? decodeURIComponent(searchParams.get('nvd_key') || '')
     : '';
@@ -2139,7 +2138,6 @@ IMPORTANT:
       currentUrl.searchParams.set('vuln_client', (selection.vulnClient ?? true) ? '1' : '0');
       currentUrl.searchParams.set('vuln_server', (selection.vulnServer ?? true) ? '1' : '0');
       currentUrl.searchParams.set('vuln_deps', (selection.vulnDeps ?? true) ? '1' : '0');
-      currentUrl.searchParams.set('vuln_obsidian', (selection.includeVulnsInObsidian ?? true) ? '1' : '0');
       if (selection.nvdKey) {
         currentUrl.searchParams.set('nvd_key', encodeURIComponent(selection.nvdKey));
       } else {
@@ -3080,29 +3078,29 @@ IMPORTANT:
                       <FaBookOpen className="mr-2" />
                       {messages.repoPage?.exportAsObsidian || 'Export as Obsidian Vault (.zip)'}
                     </button>
+                    {vulnReport && (
+                      <div className="mt-1 p-2 rounded-md border border-[var(--border-color)] bg-[var(--background)]/40 text-xs space-y-1.5">
+                        <label className="flex items-center gap-2 text-[var(--foreground)] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={exportIncludeVulns}
+                            onChange={(e) => setExportIncludeVulns(e.target.checked)}
+                            className="h-3.5 w-3.5 accent-[var(--accent-primary)]"
+                          />
+                          Include vulnerability report (🔐 Security folder)
+                        </label>
+                        <label className={`flex items-center gap-2 text-[var(--muted)] cursor-pointer ${exportIncludeVulns ? '' : 'opacity-50 pointer-events-none'}`}>
+                          <input
+                            type="checkbox"
+                            checked={exportIncludeVulnGraph}
+                            onChange={(e) => setExportIncludeVulnGraph(e.target.checked)}
+                            className="h-3.5 w-3.5 accent-[var(--accent-primary)]"
+                          />
+                          Include vulnerability graph (Canvas + Mermaid)
+                        </label>
+                      </div>
+                    )}
                   </div>
-                  {vulnReport && (
-                    <div className="mt-3 p-2 rounded-md border border-[var(--border-color)] bg-[var(--background)]/40 text-xs space-y-1.5">
-                      <label className="flex items-center gap-2 text-[var(--foreground)] cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={exportIncludeVulns}
-                          onChange={(e) => setExportIncludeVulns(e.target.checked)}
-                          className="h-3.5 w-3.5 accent-[var(--accent-primary)]"
-                        />
-                        Include vulnerability report (🔐 Security folder)
-                      </label>
-                      <label className={`flex items-center gap-2 text-[var(--muted)] cursor-pointer ${exportIncludeVulns ? '' : 'opacity-50 pointer-events-none'}`}>
-                        <input
-                          type="checkbox"
-                          checked={exportIncludeVulnGraph}
-                          onChange={(e) => setExportIncludeVulnGraph(e.target.checked)}
-                          className="h-3.5 w-3.5 accent-[var(--accent-primary)]"
-                        />
-                        Include vulnerability graph (Canvas + Mermaid)
-                      </label>
-                    </div>
-                  )}
                   {exportError && (
                     <div className="mt-2 text-xs text-[var(--highlight)]">
                       {exportError}
@@ -3316,7 +3314,6 @@ IMPORTANT:
         vulnServer={vulnServerEnabled}
         vulnDeps={vulnDepsEnabled}
         nvdKey={nvdKeyParam}
-        includeVulnsInObsidian={vulnObsidianInclude}
       />
     </div>
   );

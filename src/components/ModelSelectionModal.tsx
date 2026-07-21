@@ -24,7 +24,6 @@ export interface AppliedModelSelection {
   vulnServer?: boolean;
   vulnDeps?: boolean;
   nvdKey?: string;
-  includeVulnsInObsidian?: boolean;
 }
 
 interface ModelSelectionModalProps {
@@ -76,7 +75,6 @@ interface ModelSelectionModalProps {
   vulnServer?: boolean;
   vulnDeps?: boolean;
   nvdKey?: string;
-  includeVulnsInObsidian?: boolean;
 }
 
 export default function ModelSelectionModal({
@@ -117,7 +115,6 @@ export default function ModelSelectionModal({
   vulnServer = true,
   vulnDeps = true,
   nvdKey = '',
-  includeVulnsInObsidian = true,
 }: ModelSelectionModalProps) {
   const { messages: t } = useLanguage();
 
@@ -139,7 +136,6 @@ export default function ModelSelectionModal({
   const [localVulnServer, setLocalVulnServer] = useState(vulnServer);
   const [localVulnDeps, setLocalVulnDeps] = useState(vulnDeps);
   const [localNvdKey, setLocalNvdKey] = useState(nvdKey);
-  const [localIncludeVulnsInObsidian, setLocalIncludeVulnsInObsidian] = useState(includeVulnsInObsidian);
   
   // Token input state
   const [localAccessToken, setLocalAccessToken] = useState('');
@@ -167,9 +163,8 @@ export default function ModelSelectionModal({
       setLocalVulnServer(vulnServer);
       setLocalVulnDeps(vulnDeps);
       setLocalNvdKey(nvdKey);
-      setLocalIncludeVulnsInObsidian(includeVulnsInObsidian);
     }
-  }, [isOpen, provider, model, isCustomModel, customModel, isComprehensiveView, pageCount, excludedDirs, excludedFiles, includedDirs, includedFiles, repositoryType, showTokenInput, enableVulnScan, vulnClient, vulnServer, vulnDeps, nvdKey, includeVulnsInObsidian]);
+  }, [isOpen, provider, model, isCustomModel, customModel, isComprehensiveView, pageCount, excludedDirs, excludedFiles, includedDirs, includedFiles, repositoryType, showTokenInput, enableVulnScan, vulnClient, vulnServer, vulnDeps, nvdKey]);
 
   // Handler for applying changes
   const handleApply = () => {
@@ -206,7 +201,6 @@ export default function ModelSelectionModal({
         vulnServer: localVulnServer,
         vulnDeps: localVulnDeps,
         nvdKey: localNvdKey,
-        includeVulnsInObsidian: localIncludeVulnsInObsidian,
       } : {}),
     });
     onClose();
@@ -381,16 +375,6 @@ export default function ModelSelectionModal({
                           autoComplete="off"
                         />
                       </div>
-
-                      <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer pt-1">
-                        <input
-                          type="checkbox"
-                          checked={localIncludeVulnsInObsidian}
-                          onChange={(e) => setLocalIncludeVulnsInObsidian(e.target.checked)}
-                          className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)]"
-                        />
-                        Include vulnerability report in Obsidian export
-                      </label>
                     </div>
                   )}
                 </div>

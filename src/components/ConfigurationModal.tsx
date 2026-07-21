@@ -67,8 +67,6 @@ interface ConfigurationModalProps {
   setVulnDeps: (value: boolean) => void;
   nvdKey: string;
   setNvdKey: (value: string) => void;
-  includeVulnsInObsidian: boolean;
-  setIncludeVulnsInObsidian: (value: boolean) => void;
 
   // Authentication
   authRequired?: boolean;
@@ -120,8 +118,6 @@ export default function ConfigurationModal({
   setVulnDeps,
   nvdKey,
   setNvdKey,
-  includeVulnsInObsidian,
-  setIncludeVulnsInObsidian,
   authRequired,
   authCode,
   setAuthCode,
@@ -316,16 +312,6 @@ export default function ConfigurationModal({
                       autoComplete="off"
                     />
                   </div>
-
-                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer pt-1">
-                    <input
-                      type="checkbox"
-                      checked={includeVulnsInObsidian}
-                      onChange={(e) => setIncludeVulnsInObsidian(e.target.checked)}
-                      className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)]"
-                    />
-                    Include vulnerability report in Obsidian export
-                  </label>
                 </div>
               )}
             </div>

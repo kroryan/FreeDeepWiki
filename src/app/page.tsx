@@ -114,7 +114,6 @@ export default function Home() {
           if (config.vulnServer !== undefined) setVulnServer(config.vulnServer);
           if (config.vulnDeps !== undefined) setVulnDeps(config.vulnDeps);
           if (config.nvdKey !== undefined) setNvdKey(config.nvdKey || '');
-          if (config.includeVulnsInObsidian !== undefined) setIncludeVulnsInObsidian(config.includeVulnsInObsidian);
         }
       }
     } catch (error) {
@@ -163,7 +162,6 @@ export default function Home() {
   const [vulnServer, setVulnServer] = useState<boolean>(true);
   const [vulnDeps, setVulnDeps] = useState<boolean>(true);
   const [nvdKey, setNvdKey] = useState<string>('');
-  const [includeVulnsInObsidian, setIncludeVulnsInObsidian] = useState<boolean>(true);
 
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -433,7 +431,6 @@ export default function Home() {
           vulnServer,
           vulnDeps,
           nvdKey,
-          includeVulnsInObsidian,
         };
         existingConfigs[currentRepoUrl] = configToSave;
         localStorage.setItem(REPO_CONFIG_CACHE_KEY, JSON.stringify(existingConfigs));
@@ -503,7 +500,6 @@ export default function Home() {
       params.append('vuln_client', vulnClient ? '1' : '0');
       params.append('vuln_server', vulnServer ? '1' : '0');
       params.append('vuln_deps', vulnDeps ? '1' : '0');
-      params.append('vuln_obsidian', includeVulnsInObsidian ? '1' : '0');
       if (nvdKey) {
         params.append('nvd_key', encodeURIComponent(nvdKey));
       }
@@ -692,8 +688,6 @@ export default function Home() {
             setVulnDeps={setVulnDeps}
             nvdKey={nvdKey}
             setNvdKey={setNvdKey}
-            includeVulnsInObsidian={includeVulnsInObsidian}
-            setIncludeVulnsInObsidian={setIncludeVulnsInObsidian}
             authRequired={authRequired}
             authCode={authCode}
             setAuthCode={setAuthCode}
