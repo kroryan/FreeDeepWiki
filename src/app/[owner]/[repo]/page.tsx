@@ -4212,7 +4212,7 @@ IMPORTANT:
         authCode={authCode}
         setAuthCode={setAuthCode}
         isAuthLoading={isAuthLoading}
-        showVulnScan={true}
+        showVulnScan={effectiveRepoInfo.type !== 'website'}
         enableVulnScan={vulnScanRequested}
         vulnClient={vulnClientEnabled}
         vulnServer={vulnServerEnabled}

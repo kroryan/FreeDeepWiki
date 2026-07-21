@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { FaHistory, FaTrash } from 'react-icons/fa';
+import { FaHistory, FaSync, FaTrash } from 'react-icons/fa';
 import { ScanRelease } from './types';
 
 interface Props {
@@ -9,6 +9,7 @@ interface Props {
   selectedVersion: number | null;
   onSelectVersion: (version: number) => void;
   onDeleteVersion: (version: number) => void;
+  onRerun?: () => void;
   disabled?: boolean;
 }
 
@@ -16,12 +17,15 @@ interface Props {
  * Version-history dropdown for a vulnerability/website-security scan --
  * mirrors the wiki's "Wiki Release" dropdown, but scoped to a scan's own
  * releases so past scans stay reachable instead of only ever showing the
- * latest one.
+ * latest one. Shown as soon as there's at least one saved release (matching
+ * the wiki dropdown's `length > 0` threshold) -- it previously required 2+
+ * releases before rendering at all, which hid it entirely for anyone who'd
+ * only ever run one scan.
  */
 export default function ScanReleaseSelector({
-  releases, selectedVersion, onSelectVersion, onDeleteVersion, disabled = false,
+  releases, selectedVersion, onSelectVersion, onDeleteVersion, onRerun, disabled = false,
 }: Props) {
-  if (releases.length <= 1) return null;
+  if (releases.length === 0) return null;
 
   return (
     <div className="mb-3">
@@ -49,6 +53,19 @@ export default function ScanReleaseSelector({
             );
           })}
         </select>
+        {onRerun && (
+          <button
+            type="button"
+            onClick={onRerun}
+            disabled={disabled}
+            title="Rerun scan"
+            aria-label="Rerun scan"
+            className="flex items-center gap-1.5 px-3 text-xs bg-[var(--background)] text-[var(--foreground)] rounded-md border border-[var(--border-color)] hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors hover:cursor-pointer"
+          >
+            <FaSync />
+            Rerun
+          </button>
+        )}
         <button
           type="button"
           onClick={() => { if (selectedVersion != null) onDeleteVersion(selectedVersion); }}

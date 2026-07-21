@@ -111,6 +111,7 @@ export default function WebVulnSection({
           selectedVersion={selectedVersion}
           onSelectVersion={onSelectVersion}
           onDeleteVersion={onDeleteVersion}
+          onRerun={onRetry}
           disabled={status === 'running'}
         />
       )}
