@@ -19,10 +19,10 @@
   },
   "home": {
     "welcome": "Bem-vindo ao FreeDeepWiki",
-    "welcomeTagline": "Documentação com IA para seus repositórios de código",
-    "description": "Gere documentação completa a partir de repositórios GitHub, GitLab ou Bitbucket com apenas alguns cliques.",
+    "welcomeTagline": "Documentação com IA para código, sites e arquivos offline",
+    "description": "Gere wikis completas a partir de repositórios GitHub, GitLab ou Bitbucket, pastas locais, arquivos ZIM, ou qualquer site ao vivo -- com uma verificação de segurança opcional integrada (CVEs de dependências, segredos, SAST e verificação profunda de vulnerabilidades web) tanto para repositórios quanto para sites.",
     "quickStart": "Início Rápido",
-    "enterRepoUrl": "Digite uma URL de repositório em um destes formatos:",
+    "enterRepoUrl": "Digite uma URL de repositório, um caminho de pasta local, ou uma URL de site:",
     "advancedVisualization": "Visualização Avançada com Diagramas Mermaid",
     "diagramDescription": "O FreeDeepWiki gera automaticamente diagramas interativos para ajudar você a entender a estrutura e os relacionamentos do código:",
     "flowDiagram": "Diagrama de Fluxo",

@@ -758,6 +758,40 @@ def read_vuln_cache(repo_type: str, owner: str, repo: str, language: str) -> Opt
         return None
 
 
+# --- Website security scan cache helpers ---
+# Same wikicache dir, own prefix -- keyed by (owner='website', repo=hostname,
+# language), mirroring the dependency vuln cache above.
+WEB_VULN_CACHE_PREFIX = "freedeepwiki_webvulns"
+
+
+def _web_vuln_cache_path(owner: str, repo: str, language: str) -> str:
+    return os.path.join(
+        WIKI_CACHE_DIR,
+        f"{WEB_VULN_CACHE_PREFIX}_{owner}_{repo}_{language}.json",
+    )
+
+
+def save_web_vuln_cache(report: dict) -> str:
+    path = _web_vuln_cache_path(
+        report.get("owner", ""), report.get("repo", ""), report.get("language", "en"),
+    )
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, ensure_ascii=False, indent=2)
+    return path
+
+
+def read_web_vuln_cache(owner: str, repo: str, language: str) -> Optional[dict]:
+    path = _web_vuln_cache_path(owner, repo, language)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as exc:
+        logger.warning("Failed to read web vuln cache %s: %s", path, exc)
+        return None
+
+
 def _split_newline_filters(value) -> List[str]:
     """Normalise the newline-separated filter strings the frontend sends
     (same convention as the chat request's excluded_dirs/excluded_files)."""
@@ -1325,6 +1359,76 @@ async def ws_repo_clone(websocket: WebSocket):
             pass
 
 
+@app.websocket("/ws/website/crawl")
+async def ws_website_crawl(websocket: WebSocket):
+    """Crawls a website with headless Chromium (Playwright) and writes each
+    page to disk as a Markdown file mirroring the site's URL structure, then
+    streams progress back exactly like /ws/repo/clone does for git repos --
+    the resulting local directory is handed to the same wiki generation code
+    path afterwards (see repo_type == "website" handling throughout).
+
+    Inbound: one JSON message: {start_url, scope: {mode, max_pages,
+    subdomains, respect_robots}, fresh}.
+    Outbound: {"type":"progress",...} frames, then a final
+    {"type":"done","local_dir","page_count","tree","readme"} (or
+    {"type":"error","message"}).
+    """
+    await websocket.accept()
+    try:
+        raw = await websocket.receive_text()
+        payload = json.loads(raw)
+
+        start_url = (payload.get("start_url") or "").strip()
+        if not start_url:
+            await websocket.send_json({"type": "error", "message": "start_url is required"})
+            return
+        if not start_url.startswith(("http://", "https://")):
+            start_url = f"https://{start_url}"
+
+        scope_payload = payload.get("scope") or {}
+        fresh = bool(payload.get("fresh", False))
+
+        from api.web_crawler.models import CrawlScope
+        scope = CrawlScope(
+            mode=scope_payload.get("mode") or "count",
+            max_pages=int(scope_payload.get("max_pages") or 60),
+            subdomains=_split_newline_filters(scope_payload.get("subdomains")) or [],
+            respect_robots=bool(scope_payload.get("respect_robots", True)),
+        )
+
+        from api.web_crawler.orchestrator import run_site_crawl
+        from api.web_crawler.site_store import website_local_dir
+
+        async def on_progress(evt):
+            await websocket.send_json({
+                "type": "progress", "message": evt.message,
+                "pages_done": evt.pages_done, "percent": evt.percent,
+            })
+
+        result = await run_site_crawl(start_url, scope, on_progress, fresh=fresh)
+
+        from api.data_pipeline import _walk_repo_tree
+        tree, _ = await asyncio.to_thread(_walk_repo_tree, result["local_dir"])
+
+        await websocket.send_json({
+            "type": "done",
+            "local_dir": result["local_dir"],
+            "page_count": result["page_count"],
+            "tree": tree,
+        })
+    except Exception as e:
+        logger.error(f"Error in /ws/website/crawl: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 @app.websocket("/ws/vuln_scan")
 async def ws_vuln_scan(websocket: WebSocket):
     """Runs a CVE vulnerability scan over the locally-cloned repo and streams
@@ -1432,6 +1536,88 @@ async def get_vuln_cache(
     if data is None:
         raise HTTPException(status_code=404,
                             detail="No vulnerability scan found for this repo.")
+    return data
+
+
+@app.websocket("/ws/web_vuln_scan")
+async def ws_web_vuln_scan(websocket: WebSocket):
+    """Runs a website security scan (headers/cookies/TLS/exposed paths/ports
+    via pure Python + the optional Docker toolkit -- nmap/nikto/httpx/
+    whatweb/testssl/nuclei/subfinder/ffuf/dalfox/wpscan) and streams progress
+    back, then returns the full report (persisted to wikicache).
+
+    Sequential with the site crawl by design: the site must already be
+    crawled (via /ws/website/crawl), so this reads the crawl manifest for
+    its sample of URLs -- no second crawl.
+
+    Inbound: one JSON message with the scan parameters.
+    Outbound: {"type":"progress","message","percent"} frames, then a final
+    {"type":"done","report":{...}} (or {"type":"error","message"}).
+    """
+    await websocket.accept()
+    try:
+        raw = await websocket.receive_text()
+        payload = json.loads(raw)
+
+        site_url = (payload.get("site_url") or "").strip()
+        owner = payload.get("owner") or "website"
+        repo = payload.get("repo") or ""
+        language = payload.get("language") or "en"
+        provider = payload.get("provider") or "google"
+        model = payload.get("model") or None
+        api_key = payload.get("api_key") or None
+        api_endpoint = payload.get("api_endpoint") or None
+        run_llm = bool(payload.get("run_llm", True))
+        enable_deep_scan = bool(payload.get("enable_deep_scan", False))
+
+        if not site_url:
+            await websocket.send_json({"type": "error", "message": "site_url is required"})
+            return
+
+        from api.web_vuln_scanner.orchestrator import run_web_vuln_scan
+
+        async def on_progress(msg: str, pct: Optional[int] = None):
+            await websocket.send_json(
+                {"type": "progress", "message": msg, "percent": pct})
+
+        report = await run_web_vuln_scan(
+            site_url=site_url, owner=owner, repo=repo, language=language,
+            provider=provider, model=model, api_key=api_key,
+            api_endpoint=api_endpoint, run_llm=run_llm,
+            enable_deep_scan=enable_deep_scan, on_progress=on_progress,
+        )
+
+        report_dict = report.to_dict()
+        try:
+            save_web_vuln_cache(report_dict)
+        except Exception as exc:
+            logger.warning("Failed to persist web vuln cache: %s", exc)
+
+        await websocket.send_json({"type": "done", "report": report_dict})
+    except Exception as e:
+        logger.error(f"Error in /ws/web_vuln_scan: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/web_vuln_cache")
+async def get_web_vuln_cache(
+    owner: str = Query(..., description="Repository owner (typically 'website')"),
+    repo: str = Query(..., description="Site hostname"),
+    language: str = Query("en", description="Wiki language the scan was run for"),
+):
+    """Return the stored website vulnerability report, or 404 if none exists."""
+    data = read_web_vuln_cache(owner, repo, language)
+    if data is None:
+        raise HTTPException(status_code=404,
+                            detail="No website vulnerability scan found for this site.")
     return data
 
 

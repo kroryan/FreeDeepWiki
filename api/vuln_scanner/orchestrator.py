@@ -60,6 +60,7 @@ async def run_vuln_scan(
     enable_server: bool = True,
     enable_deps: bool = True,
     run_llm: bool = True,
+    enable_code_scan: bool = False,
     on_progress: Optional[ProgressCb] = None,
 ) -> VulnReport:
     """Run the full scan and return a ``VulnReport``.
@@ -69,6 +70,9 @@ async def run_vuln_scan(
     """
 
     async def _p(msg: str, pct: Optional[int] = None) -> None:
+        # Always logged (console + logfile) so the scan is visible in
+        # real time to anyone watching the terminal, not just the frontend.
+        logger.info("[dep-vuln-scan] %s%s", msg, f" ({pct}%)" if pct is not None else "")
         if on_progress:
             try:
                 await on_progress(msg, pct)
@@ -134,9 +138,27 @@ async def run_vuln_scan(
     elif findings:
         llm_analyzer._apply_defaults(findings)
 
+    # --- Stage 6: optional Docker-toolkit code scan (gitleaks + semgrep) --
+    # Opt-in (Docker required, adds real wall-clock time) -- covers leaked
+    # secrets and SAST findings, which OSV/dependency lookups can't surface
+    # since those only see declared package versions, not the code itself.
+    code_scan_findings: List[dict] = []
+    code_scan_ran = False
+    if enable_code_scan:
+        await _p("Scanning source for leaked secrets and SAST findings…", 80)
+        try:
+            from api.web_vuln_scanner.docker_tools import run_code_scan_toolkit
+            web_findings = await run_code_scan_toolkit(
+                repo_dir, on_progress=(lambda msg, pct=None: _p(msg, pct)) if on_progress else None,
+            )
+            code_scan_findings = [f.to_dict() for f in web_findings]
+            code_scan_ran = True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Code scan toolkit failed (non-fatal): %s", exc)
+
     await _p("Building report…", 95)
 
-    # --- Stage 6: build report -------------------------------------------
+    # --- Stage 7: build report -------------------------------------------
     report = _build_report(
         findings=findings,
         deps=deps,
@@ -144,6 +166,14 @@ async def run_vuln_scan(
         language=language, provider=provider, model=model,
         ai_analyzed=ai_analyzed,
     )
+    report.code_scan_findings = code_scan_findings
+    report.code_scan_ran = code_scan_ran
+
+    from api.vuln_common.remediation import build_remediation_plan
+    report.remediation_plan = build_remediation_plan(
+        [f.to_dict() for f in findings] + code_scan_findings
+    ).to_dict()
+
     await _p("Scan complete.", 100)
     return report
 

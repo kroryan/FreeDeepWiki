@@ -1,0 +1,85 @@
+# FreeDeepWiki vuln-scan stack -- own fork/build, independent of RedAmon at
+# runtime. Three services:
+#   - vulnscan: the Kali toolkit image (built from ./Dockerfile), invoked as
+#     one-shot `docker run`/`docker compose run` per tool call, not a
+#     long-running server.
+#   - neo4j: graph store for scan results (Domain/IP/Port/Service/
+#     Technology/Certificate/CVE nodes) -- lets the wiki's Security section
+#     render a relationship graph the same way api/vuln_scanner does for
+#     dependency CVEs.
+#   - postgres: tabular store for scan run history (one row per scan, so
+#     "did this site's exposure change since last time" is a simple query
+#     instead of a graph traversal).
+#
+# The user runs/updates this stack themselves via `docker compose up -d`
+# (see api/web_vuln_scanner/docker_tools.py for how the backend detects
+# whether it's running and prompts to start it). FreeDeepWiki does not
+# manage Docker itself -- the user installs Docker and controls this stack.
+
+services:
+  vulnscan:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: freedeepwiki-vulnscan:latest
+    container_name: freedeepwiki-vulnscan
+    # No long-running process by default -- `docker compose run --rm
+    # vulnscan <tool> <args>` is how the backend invokes it. `up -d` just
+    # keeps the image built/available; entrypoint.sh idles if given no args.
+    command: ["sleep", "infinity"]
+    volumes:
+      - vulnscan_output:/data/output
+    networks:
+      - freedeepwiki-vulnscan-net
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5-community
+    container_name: freedeepwiki-vulnscan-neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-freedeepwiki_secret}
+      NEO4J_server_memory_pagecache_size: 256M
+      NEO4J_server_memory_heap_initial__size: 256M
+      NEO4J_server_memory_heap_max__size: 512M
+    ports:
+      - "127.0.0.1:7474:7474"  # Neo4j Browser (local-only)
+      - "127.0.0.1:7687:7687"  # Bolt protocol
+    volumes:
+      - vulnscan_neo4j_data:/data
+    networks:
+      - freedeepwiki-vulnscan-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: freedeepwiki-vulnscan-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-freedeepwiki}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-freedeepwiki_secret}
+      POSTGRES_DB: ${POSTGRES_DB:-freedeepwiki_vulnscan}
+    ports:
+      - "127.0.0.1:5433:5432"  # non-default host port to avoid clashing with a local Postgres
+    volumes:
+      - vulnscan_postgres_data:/var/lib/postgresql/data
+    networks:
+      - freedeepwiki-vulnscan-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-freedeepwiki} -d ${POSTGRES_DB:-freedeepwiki_vulnscan}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  freedeepwiki-vulnscan-net:
+    name: freedeepwiki-vulnscan-net
+
+volumes:
+  vulnscan_output:
+  vulnscan_neo4j_data:
+  vulnscan_postgres_data:

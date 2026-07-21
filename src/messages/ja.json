@@ -19,10 +19,10 @@
   },
   "home": {
     "welcome": "FreeDeepWikiへようこそ",
-    "welcomeTagline": "コードリポジトリのためのAI駆動ドキュメンテーション",
-    "description": "GitHub、GitLab、またはBitbucketリポジトリから包括的なドキュメントを数クリックで生成します。",
+    "welcomeTagline": "コード、ウェブサイト、オフラインアーカイブのためのAI駆動ドキュメンテーション",
+    "description": "GitHub、GitLab、Bitbucketリポジトリ、ローカルフォルダ、ZIMアーカイブ、または任意のライブウェブサイトから包括的なwikiを生成します。リポジトリとサイトの両方に対応するオプションのセキュリティスキャン（依存関係のCVE、シークレット、SAST、詳細なウェブ脆弱性スキャン）も内蔵しています。",
     "quickStart": "クイックスタート",
-    "enterRepoUrl": "以下のいずれかの形式でリポジトリURLを入力してください：",
+    "enterRepoUrl": "リポジトリURL、ローカルフォルダのパス、またはウェブサイトのURLを入力してください：",
     "advancedVisualization": "Mermaidダイアグラムによる高度な可視化",
     "diagramDescription": "FreeDeepWikiは、コード構造と関係を理解するのに役立つインタラクティブな図を自動的に生成します：",
     "flowDiagram": "フロー図",

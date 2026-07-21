@@ -62,6 +62,23 @@ export interface GraphData {
   links: GraphLink[];
 }
 
+// Mirrors api/vuln_common/remediation.py -- one consolidated, prioritized
+// "Suggested Solutions" page shared by every scan type (dependency/web/code).
+export interface RemediationStep {
+  action: string;
+  severity: Severity | 'INFO';
+  finding_ids: string[];
+  finding_titles: string[];
+  category: string;
+  affected_count: number;
+}
+
+export interface RemediationPlan {
+  steps: RemediationStep[];
+  summary: string;
+  total_findings_covered: number;
+}
+
 export interface VulnReport {
   repo_url: string;
   repo_type: string;
@@ -81,6 +98,9 @@ export interface VulnReport {
   scanned_dependencies: ScannedDependency[];
   graph: GraphData;
   ai_analyzed: boolean;
+  code_scan_findings?: CVEFinding[] | Record<string, unknown>[];
+  code_scan_ran?: boolean;
+  remediation_plan?: RemediationPlan;
 }
 
 export type VulnScanStatus = 'idle' | 'running' | 'done' | 'error';

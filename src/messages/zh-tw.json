@@ -19,10 +19,10 @@
   },
   "home": {
     "welcome": "歡迎使用 FreeDeepWiki",
-    "welcomeTagline": "為程式碼儲存庫提供 AI 驅動的文件",
-    "description": "只需一次點擊，即可從 GitHub、GitLab 或 Bitbucket 儲存庫產生全面的文件。",
+    "welcomeTagline": "為程式碼、網站與離線封存檔提供 AI 驅動的文件",
+    "description": "從 GitHub、GitLab 或 Bitbucket 儲存庫、本機資料夾、ZIM 封存檔，或任何線上網站產生完整的 wiki——並可選擇內建安全掃描（相依性 CVE、洩漏的機密資訊、SAST 以及深度網站漏洞掃描），適用於儲存庫與網站。",
     "quickStart": "快速開始",
-    "enterRepoUrl": "請以下列格式之一輸入儲存庫 URL：",
+    "enterRepoUrl": "請輸入儲存庫 URL、本機資料夾路徑，或網站 URL：",
     "advancedVisualization": "使用 Mermaid 圖表進行進階視覺化",
     "diagramDescription": "FreeDeepWiki 自動產生互動式圖表，協助您理解程式碼結構和關係：",
     "flowDiagram": "流程圖",

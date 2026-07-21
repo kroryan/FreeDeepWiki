@@ -163,6 +163,32 @@ export default function Home() {
   const [vulnDeps, setVulnDeps] = useState<boolean>(true);
   const [nvdKey, setNvdKey] = useState<string>('');
 
+  // 🌐 Website wikis: what parseRepositoryInput classified the current input
+  // as -- ConfigurationModal only shows the website-only options (crawl
+  // scope, Community Analysis, Technical Analysis mode) when this is
+  // 'website', never for an actual code repo.
+  const [detectedInputType, setDetectedInputType] = useState<string>('github');
+  // Crawl scope: how much of the site to crawl -- a page-count cap, an
+  // explicit subdomain/path list (documented in the UI as one entry per
+  // line), or the whole site (still bounded by a hard server-side cap).
+  const [crawlScopeMode, setCrawlScopeMode] = useState<'count' | 'subdomains' | 'all'>('count');
+  const [crawlMaxPages, setCrawlMaxPages] = useState<number>(60);
+  const [crawlSubdomains, setCrawlSubdomains] = useState<string>('');
+  const [crawlRespectRobots, setCrawlRespectRobots] = useState<boolean>(true);
+  // Default OFF: per the intended behaviour, a website wiki is a wiki
+  // ABOUT the site's subject matter (e.g. a fan wiki gets rebuilt as a fan
+  // wiki) -- a technical/architecture analysis of the site itself is an
+  // explicit opt-in, entirely different generation mode.
+  const [enableTechnicalAnalysis, setEnableTechnicalAnalysis] = useState<boolean>(false);
+  // User-generated content (profiles, comments, forum posts) is always
+  // excluded from the wiki -- the AI is instructed to skip it entirely,
+  // not an opt-in toggle.
+  // Deep website security scan (Docker toolkit: nmap/nikto/httpx/testssl/
+  // nuclei/subfinder/ffuf/dalfox/wpscan) -- opt-in since it requires Docker
+  // and downloads a multi-GB image on first use. The always-on pure-Python
+  // checks (headers/cookies/TLS/exposed-paths) run regardless.
+  const [enableDeepScan, setEnableDeepScan] = useState<boolean>(false);
+
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState<string>(language);
@@ -291,7 +317,11 @@ export default function Home() {
 
     // Handle Windows absolute paths (e.g., C:\path\to\folder)
     const windowsPathRegex = /^[a-zA-Z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*$/;
-    const customGitRegex = /^(?:https?:\/\/)?([^\/]+)\/(.+?)\/([^\/]+)(?:\.git)?\/?$/;
+
+    // A hostname that actually looks like a real domain/host, not a bare
+    // shorthand segment like "kroryan" (from "kroryan/FreeDeepWiki").
+    const looksLikeRealHost = (h: string): boolean =>
+      h.includes('.') || h === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
 
     if (windowsPathRegex.test(input)) {
       type = 'local';
@@ -306,33 +336,59 @@ export default function Home() {
       repo = input.split('/').filter(Boolean).pop() || 'local-repo';
       owner = 'local';
     }
-    else if (customGitRegex.test(input)) {
-      // Detect repository type based on domain
-      const domain = extractUrlDomain(input);
-      if (domain?.includes('github.com')) {
-        type = 'github';
-      } else if (domain?.includes('gitlab.com') || domain?.includes('gitlab.')) {
-        type = 'gitlab';
-      } else if (domain?.includes('bitbucket.org') || domain?.includes('bitbucket.')) {
-        type = 'bitbucket';
-      } else {
-        type = 'web'; // fallback for other git hosting services
-      }
+    // Anything that parses as a URL (or a bare "host[/path...]" once a
+    // scheme is assumed -- extractUrlDomain/extractUrlPath both do that) is
+    // classified by how many path segments follow the host, using the
+    // browser's own URL parser rather than a hand-rolled regex (a prior
+    // regex here mis-split single-path-segment URLs like
+    // "https://example.com/blog" into a bogus 2-segment owner/repo pair).
+    //
+    //   0 or 1 path segments, real-looking host -> website (crawl target):
+    //     "kroryandev.com", "https://example.com/", "https://example.com/blog"
+    //   >=2 path segments -> git host/owner/repo:
+    //     "https://github.com/kroryan/FreeDeepWiki", self-hosted forges, etc.
+    //   host has no dot and no path (e.g. "kroryan/FreeDeepWiki" parsed as
+    //     host "kroryan") -> falls through to Unsupported, same as before
+    //     this feature existed, so a mistyped GitHub shorthand doesn't
+    //     silently turn into a crawl of a nonexistent domain.
+    else if (extractUrlDomain(input)) {
+      const domain = extractUrlDomain(input)!;
+      const hostname = domain.replace(/^https?:\/\//, '');
+      const path = (extractUrlPath(input) || '').replace(/\.git$/, '');
+      const parts = path ? path.split('/').filter(Boolean) : [];
 
-      fullPath = extractUrlPath(input)?.replace(/\.git$/, '');
-      const parts = fullPath?.split('/') ?? [];
       if (parts.length >= 2) {
+        // host/owner/repo -- a git host of some kind.
+        if (domain.includes('github.com')) {
+          type = 'github';
+        } else if (domain.includes('gitlab.com') || domain.includes('gitlab.')) {
+          type = 'gitlab';
+        } else if (domain.includes('bitbucket.org') || domain.includes('bitbucket.')) {
+          type = 'bitbucket';
+        } else {
+          type = 'web'; // fallback for other git hosting services (Gitea, Codeberg, self-hosted, ...)
+        }
+        fullPath = path;
         repo = parts[parts.length - 1] || '';
         owner = parts[parts.length - 2] || '';
+      } else if (looksLikeRealHost(hostname)) {
+        // 0-1 path segments on a real domain -- a website to crawl, not a
+        // git shorthand (which requires an explicit owner/repo pair).
+        type = 'website';
+        owner = 'website';
+        repo = hostname;
+        fullPath = path;
       }
-    }
-    // Unsupported URL formats
-    else {
-      console.error('Unsupported URL format:', input);
-      return null;
+      // else: single bare segment with no dot (e.g. "kroryan/FreeDeepWiki"
+      // parsed to host "kroryan", path "FreeDeepWiki") -- falls through,
+      // owner/repo stay empty, caught by the check below.
     }
 
+    // Nothing matched (extractUrlDomain failed entirely, the host/path shape
+    // matched neither a git nor a website pattern, or a git match had an
+    // empty owner/repo segment) -- unsupported input.
     if (!owner || !repo) {
+      console.error('Unsupported URL format:', input);
       return null;
     }
 
@@ -361,6 +417,11 @@ export default function Home() {
       setError('Invalid repository format. Use "owner/repo", GitHub/GitLab/BitBucket URL, or a local folder path like "/path/to/folder" or "C:\\path\\to\\folder".');
       return;
     }
+
+    // Drives whether ConfigurationModal shows the website-only options
+    // (crawl scope, Community Analysis, Technical Analysis) -- those must
+    // never appear for an actual code repo.
+    setDetectedInputType(parsedRepo.type);
 
     // If valid, open the configuration modal
     setError(null);
@@ -450,7 +511,7 @@ export default function Home() {
       return;
     }
 
-    const { owner, repo, type, localPath } = parsedRepo;
+    const { owner, repo, type, localPath, fullPath } = parsedRepo;
 
     // Store tokens in query params if they exist
     const params = new URLSearchParams();
@@ -458,10 +519,16 @@ export default function Home() {
       params.append('token', accessToken);
     }
     // Always include the type parameter
-    params.append('type', (type == 'local' ? type : selectedPlatform) || 'github');
+    params.append('type', (type === 'local' || type === 'website') ? type : (selectedPlatform || 'github'));
     // Add local path if it exists
     if (localPath) {
       params.append('local_path', encodeURIComponent(localPath));
+    } else if (type === 'website') {
+      // repositoryInput may be a bare host ("kroryandev.com", no scheme) --
+      // the crawler and backend both need a full URL, so rebuild one from
+      // the parsed hostname (repo) + path instead of sending the raw input.
+      const websiteUrl = `https://${repo}${fullPath ? `/${fullPath}` : ''}`;
+      params.append('repo_url', encodeURIComponent(websiteUrl));
     } else {
       params.append('repo_url', encodeURIComponent(repositoryInput));
     }
@@ -503,6 +570,20 @@ export default function Home() {
       if (nvdKey) {
         params.append('nvd_key', encodeURIComponent(nvdKey));
       }
+    }
+
+    // 🌐 Website wiki crawl + analysis-mode parameters (only meaningful for
+    // type === 'website'; harmless no-ops otherwise since the repo page only
+    // reads them when repo_type is 'website').
+    if (type === 'website') {
+      params.append('crawl_scope_mode', crawlScopeMode);
+      params.append('crawl_max_pages', crawlMaxPages.toString());
+      if (crawlScopeMode === 'subdomains' && crawlSubdomains) {
+        params.append('crawl_subdomains', encodeURIComponent(crawlSubdomains));
+      }
+      params.append('crawl_respect_robots', crawlRespectRobots ? '1' : '0');
+      params.append('technical_analysis', enableTechnicalAnalysis ? '1' : '0');
+      params.append('deep_scan', enableDeepScan ? '1' : '0');
     }
 
     const queryString = params.toString() ? `?${params.toString()}` : '';
@@ -688,6 +769,19 @@ export default function Home() {
             setVulnDeps={setVulnDeps}
             nvdKey={nvdKey}
             setNvdKey={setNvdKey}
+            isWebsite={detectedInputType === 'website'}
+            crawlScopeMode={crawlScopeMode}
+            setCrawlScopeMode={setCrawlScopeMode}
+            crawlMaxPages={crawlMaxPages}
+            setCrawlMaxPages={setCrawlMaxPages}
+            crawlSubdomains={crawlSubdomains}
+            setCrawlSubdomains={setCrawlSubdomains}
+            crawlRespectRobots={crawlRespectRobots}
+            setCrawlRespectRobots={setCrawlRespectRobots}
+            enableTechnicalAnalysis={enableTechnicalAnalysis}
+            setEnableTechnicalAnalysis={setEnableTechnicalAnalysis}
+            enableDeepScan={enableDeepScan}
+            setEnableDeepScan={setEnableDeepScan}
             authRequired={authRequired}
             authCode={authCode}
             setAuthCode={setAuthCode}
@@ -775,6 +869,10 @@ export default function Home() {
               <div
                 className="bg-[var(--background)]/70 p-3 rounded border border-[var(--border-color)] font-mono overflow-x-hidden whitespace-nowrap"
               >https://bitbucket.org/atlassian/atlaskit
+              </div>
+              <div
+                className="bg-[var(--background)]/70 p-3 rounded border border-[var(--border-color)] font-mono overflow-x-hidden whitespace-nowrap"
+              >https://example.com <span className="text-[var(--accent-primary)]">(website)</span>
               </div>
             </div>
           </div>

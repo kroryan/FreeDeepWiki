@@ -68,6 +68,23 @@ interface ConfigurationModalProps {
   nvdKey: string;
   setNvdKey: (value: string) => void;
 
+  // 🌐 Website wikis: crawl scope + analysis-mode options. Only rendered
+  // when isWebsite is true (i.e. parseRepositoryInput classified the input
+  // as a website, not a code repo) -- these must never appear for a repo.
+  isWebsite?: boolean;
+  crawlScopeMode?: 'count' | 'subdomains' | 'all';
+  setCrawlScopeMode?: (value: 'count' | 'subdomains' | 'all') => void;
+  crawlMaxPages?: number;
+  setCrawlMaxPages?: (value: number) => void;
+  crawlSubdomains?: string;
+  setCrawlSubdomains?: (value: string) => void;
+  crawlRespectRobots?: boolean;
+  setCrawlRespectRobots?: (value: boolean) => void;
+  enableTechnicalAnalysis?: boolean;
+  setEnableTechnicalAnalysis?: (value: boolean) => void;
+  enableDeepScan?: boolean;
+  setEnableDeepScan?: (value: boolean) => void;
+
   // Authentication
   authRequired?: boolean;
   authCode?: string;
@@ -118,6 +135,19 @@ export default function ConfigurationModal({
   setVulnDeps,
   nvdKey,
   setNvdKey,
+  isWebsite = false,
+  crawlScopeMode = 'count',
+  setCrawlScopeMode,
+  crawlMaxPages = 60,
+  setCrawlMaxPages,
+  crawlSubdomains = '',
+  setCrawlSubdomains,
+  crawlRespectRobots = true,
+  setCrawlRespectRobots,
+  enableTechnicalAnalysis = false,
+  setEnableTechnicalAnalysis,
+  enableDeepScan = false,
+  setEnableDeepScan,
   authRequired,
   authCode,
   setAuthCode,
@@ -209,16 +239,133 @@ export default function ConfigurationModal({
               />
             </div>
 
-            {/* Access token section using TokenInput component */}
-            <TokenInput
-              selectedPlatform={selectedPlatform}
-              setSelectedPlatform={setSelectedPlatform}
-              accessToken={accessToken}
-              setAccessToken={setAccessToken}
-              showTokenSection={showTokenSection}
-              onToggleTokenSection={() => setShowTokenSection(!showTokenSection)}
-              allowPlatformChange={true}
-            />
+            {/* Access token section using TokenInput component -- git hosting
+                auth doesn't apply to a website crawl. */}
+            {!isWebsite && (
+              <TokenInput
+                selectedPlatform={selectedPlatform}
+                setSelectedPlatform={setSelectedPlatform}
+                accessToken={accessToken}
+                setAccessToken={setAccessToken}
+                showTokenSection={showTokenSection}
+                onToggleTokenSection={() => setShowTokenSection(!showTokenSection)}
+                allowPlatformChange={true}
+              />
+            )}
+
+            {/* 🌐 Website wiki options -- crawl scope + analysis modes. Only
+                shown when the input was detected as a website, never for an
+                actual code repo. */}
+            {isWebsite && (
+              <div className="mb-4 p-4 rounded-md border border-[var(--border-color)] bg-[var(--background)]/40">
+                <label className="block text-sm font-medium text-[var(--foreground)] mb-2">
+                  <span className="text-[var(--accent-primary)]">🌐 Crawl Scope</span>
+                </label>
+                <div className="flex flex-col gap-2 mb-3">
+                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="radio"
+                      name="crawl-scope-mode"
+                      checked={crawlScopeMode === 'count'}
+                      onChange={() => setCrawlScopeMode?.('count')}
+                      className="h-4 w-4 accent-[var(--accent-primary)]"
+                    />
+                    Limit to a number of pages
+                  </label>
+                  {crawlScopeMode === 'count' && (
+                    <input
+                      type="number"
+                      min={1}
+                      max={2000}
+                      value={crawlMaxPages}
+                      onChange={(e) => setCrawlMaxPages?.(Math.max(1, Math.min(2000, Number(e.target.value) || 1)))}
+                      className="input-japanese ml-6 w-32 px-3 py-1.5 text-sm rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                    />
+                  )}
+
+                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="radio"
+                      name="crawl-scope-mode"
+                      checked={crawlScopeMode === 'subdomains'}
+                      onChange={() => setCrawlScopeMode?.('subdomains')}
+                      className="h-4 w-4 accent-[var(--accent-primary)]"
+                    />
+                    Specific subdomains / sections
+                  </label>
+                  {crawlScopeMode === 'subdomains' && (
+                    <div className="ml-6">
+                      <textarea
+                        value={crawlSubdomains}
+                        onChange={(e) => setCrawlSubdomains?.(e.target.value)}
+                        rows={3}
+                        placeholder={"One per line, e.g.:\nblog.example.com\nexample.com/docs\nshop.example.com"}
+                        className="input-japanese block w-full px-3 py-2 text-sm rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                      />
+                      <p className="text-xs text-[var(--muted)] mt-1">
+                        One subdomain or path per line. Each is crawled as its own starting point (still limited to pages on the same site).
+                      </p>
+                    </div>
+                  )}
+
+                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="radio"
+                      name="crawl-scope-mode"
+                      checked={crawlScopeMode === 'all'}
+                      onChange={() => setCrawlScopeMode?.('all')}
+                      className="h-4 w-4 accent-[var(--accent-primary)]"
+                    />
+                    Entire site (capped at 2000 pages for safety)
+                  </label>
+                </div>
+
+                <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer pt-1 border-t border-[var(--border-color)]/30">
+                  <input
+                    type="checkbox"
+                    checked={crawlRespectRobots}
+                    onChange={(e) => setCrawlRespectRobots?.(e.target.checked)}
+                    className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)] mt-2"
+                  />
+                  <span className="mt-2">Respect robots.txt (recommended)</span>
+                </label>
+
+                <div className="mt-4 pt-3 border-t border-[var(--border-color)]/30 space-y-2">
+                  <label className="flex items-start gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={enableTechnicalAnalysis}
+                      onChange={(e) => setEnableTechnicalAnalysis?.(e.target.checked)}
+                      className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)] mt-0.5"
+                    />
+                    <span>
+                      <span className="text-[var(--accent-primary)]">🛠️ Technical Analysis mode</span>
+                      <span className="block text-xs text-[var(--muted)] font-normal">
+                        Generate a wiki ABOUT the site itself (architecture, tech stack, page structure) instead of a wiki about the site&apos;s subject matter. Off by default: a fan wiki becomes a fan wiki, not a report on its HTML.
+                      </span>
+                    </span>
+                  </label>
+                  <p className="text-xs text-[var(--muted)] pl-6">
+                    User-generated pages (profiles, comments, forum posts) are always excluded from the wiki -- the AI is instructed to skip them entirely, so no community/user content ever appears.
+                  </p>
+
+                  <label className="flex items-start gap-2 text-sm text-[var(--foreground)] cursor-pointer pt-2 border-t border-[var(--border-color)]/30 mt-2">
+                    <input
+                      type="checkbox"
+                      checked={enableDeepScan}
+                      onChange={(e) => setEnableDeepScan?.(e.target.checked)}
+                      className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)] mt-0.5"
+                    />
+                    <span>
+                      <span className="text-[var(--accent-primary)]">🐳 Deep security scan (Docker)</span>
+                      <span className="block text-xs text-[var(--muted)] font-normal">
+                        Adds nmap/nikto/httpx/testssl/nuclei/subfinder/ffuf/dalfox/wpscan on top of the always-on header/cookie/TLS/exposed-path checks. Requires Docker; downloads a multi-GB scan toolkit image the first time it runs.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            )}
 
             {/* Authorization Code Input */}
             {isAuthLoading && (

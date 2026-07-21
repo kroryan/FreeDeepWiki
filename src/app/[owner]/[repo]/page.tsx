@@ -8,6 +8,8 @@ import ThemeToggle from '@/components/theme-toggle';
 import WikiTreeView from '@/components/WikiTreeView';
 import VulnSection from '@/components/vuln/VulnSection';
 import { VulnReport, VulnScanStatus } from '@/components/vuln/types';
+import WebVulnSection from '@/components/vuln/WebVulnSection';
+import { WebVulnReport } from '@/components/vuln/webTypes';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
 import { getSavedApiCredentials } from '@/utils/apiCredentials';
@@ -299,6 +301,109 @@ async function fetchRepoStructureViaBackendClone(
   }
 }
 
+interface WebsiteCrawlScope {
+  mode: 'count' | 'subdomains' | 'all';
+  maxPages: number;
+  subdomains: string;
+  respectRobots: boolean;
+}
+
+interface WebsiteCrawlResult {
+  fileTreeData: string;
+  localDir: string;
+  pageCount: number;
+}
+
+/**
+ * Crawls a website with headless Chromium (see /ws/website/crawl in api.py)
+ * and writes each page to disk as Markdown mirroring the site's URL
+ * structure, mirroring fetchRepoStructureViaBackendClone's WS-then-HTTP
+ * shape -- except there is no HTTP fallback here: a crawl is a genuinely
+ * long-running streamed operation (unlike a repo clone, which the HTTP path
+ * can do synchronously), so a WS failure is a hard failure for websites.
+ */
+async function fetchWebsiteStructureViaCrawl(
+  startUrl: string,
+  scope: WebsiteCrawlScope,
+  fresh: boolean,
+  onProgress: (progress: CloneProgress | null) => void
+): Promise<WebsiteCrawlResult | null> {
+  const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
+  const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws');
+
+  return new Promise<WebsiteCrawlResult | null>((resolve) => {
+    const ws = new WebSocket(`${wsBaseUrl}/ws/website/crawl`);
+    let settled = false;
+    // Crawls can legitimately take minutes for large scopes -- much longer
+    // than a git clone -- so this uses its own generous timeout rather than
+    // WEBSOCKET_CONNECT_TIMEOUT_MS (which is sized for connection setup).
+    const timeout = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try { ws.close(); } catch {}
+        console.warn('Website crawl timed out.');
+        resolve(null);
+      }
+    }, 20 * 60 * 1000);
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        start_url: startUrl,
+        fresh,
+        scope: {
+          mode: scope.mode,
+          max_pages: scope.maxPages,
+          subdomains: scope.subdomains,
+          respect_robots: scope.respectRobots,
+        },
+      }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'progress') {
+          onProgress({ phase: msg.message || 'Crawling…', percent: msg.percent ?? 0 });
+        } else if (msg.type === 'done') {
+          settled = true;
+          clearTimeout(timeout);
+          resolve({
+            fileTreeData: treeToFileList(msg.tree || []),
+            localDir: msg.local_dir || '',
+            pageCount: msg.page_count || 0,
+          });
+          ws.close();
+        } else if (msg.type === 'error') {
+          settled = true;
+          clearTimeout(timeout);
+          console.warn('Website crawl failed:', msg.message);
+          resolve(null);
+          ws.close();
+        }
+      } catch {
+        // Ignore unparsable frames.
+      }
+    };
+
+    ws.onerror = () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
+        console.warn('WebSocket error during website crawl.');
+        resolve(null);
+      }
+    };
+
+    ws.onclose = () => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
+        resolve(null);
+      }
+    };
+  });
+}
+
 const createGithubHeaders = (githubToken: string): HeadersInit => {
   const headers: HeadersInit = {
     'Accept': 'application/vnd.github.v3+json'
@@ -385,6 +490,16 @@ export default function RepoWikiPage() {
     ? decodeURIComponent(searchParams.get('nvd_key') || '')
     : '';
 
+  // 🌐 Website wiki (crawl) params -- only meaningful when repoType === 'website'.
+  const crawlScopeModeParam = (searchParams.get('crawl_scope_mode') as 'count' | 'subdomains' | 'all') || 'count';
+  const crawlMaxPagesParam = Number(searchParams.get('crawl_max_pages')) || 60;
+  const crawlSubdomainsParam = searchParams.get('crawl_subdomains')
+    ? decodeURIComponent(searchParams.get('crawl_subdomains') || '')
+    : '';
+  const crawlRespectRobotsParam = searchParams.get('crawl_respect_robots') !== '0';
+  const technicalAnalysisEnabled = searchParams.get('technical_analysis') === '1';
+  const deepScanEnabled = searchParams.get('deep_scan') === '1';
+
   // Import language context for translations
   const { messages } = useLanguage();
 
@@ -437,6 +552,17 @@ export default function RepoWikiPage() {
   // Lets the wiki-save effect kick off the vuln scan without adding
   // runVulnScan to its dependency list (which would retrigger saves).
   const runVulnScanRef = useRef<() => void>(() => {});
+
+  // 🌐 Website vulnerability scan state -- separate report shape/endpoint
+  // from the dependency scan above (WebVulnReport vs VulnReport), used only
+  // when effectiveRepoInfo.type === 'website'.
+  const [webVulnReport, setWebVulnReport] = useState<WebVulnReport | null>(null);
+  const [webVulnStatus, setWebVulnStatus] = useState<VulnScanStatus>('idle');
+  const [webVulnProgressMessage, setWebVulnProgressMessage] = useState<string | undefined>();
+  const [webVulnProgressPercent, setWebVulnProgressPercent] = useState<number | null>(null);
+  const [webVulnError, setWebVulnError] = useState<string | null>(null);
+  const webVulnScanStartedRef = useRef(false);
+  const runWebVulnScanRef = useRef<() => void>(() => {});
 
   // Page edit mode (manual textarea + AI-assisted rewrite). Never
   // autosaves -- editedContent only replaces generatedPages[pageId] on an
@@ -923,18 +1049,47 @@ Remember:
       // Get repository URL
       const repoUrl = getRepoUrl(effectiveRepoInfo);
 
-      // Prepare request body
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const requestBody: Record<string, any> = {
-        repo_url: repoUrl,
-        type: effectiveRepoInfo.type,
-        // One-shot structure determination, not a chat -- same reasoning as
-        // the page-generation request body above.
-        enable_tool_calling: false,
-        retrieval_query: `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page technical wiki for ${owner}/${repo}. Focus on architecture, features, data flow, deployment, and the files named in the repository tree.`,
-        messages: [{
-          role: 'user',
-content: `Analyze this GitHub repository ${owner}/${repo} and create a wiki structure for it.
+      // 🌐 Website wikis have two entirely different generation modes (not a
+      // section toggle): by default the wiki is ABOUT the site's subject
+      // matter (a fan wiki crawl produces a fan wiki, not a report on the
+      // fan wiki's HTML); Technical Analysis mode instead produces a wiki
+      // ABOUT the site itself (architecture, page structure, tech stack) the
+      // same way a code repo wiki documents a codebase. User-generated pages
+      // (profiles/comments/forum posts -- flagged in the crawl manifest) are
+      // always excluded entirely, never generated as wiki pages and never
+      // mixed into the subject/technical wiki's sections.
+      const isWebsite = effectiveRepoInfo.type === 'website';
+
+      const languageLine = `${language === 'en' ? 'English' :
+            language === 'ja' ? 'Japanese (日本語)' :
+            language === 'zh' ? 'Mandarin Chinese (中文)' :
+            language === 'zh-tw' ? 'Traditional Chinese (繁體中文)' :
+            language === 'es' ? 'Spanish (Español)' :
+            language === 'kr' ? 'Korean (한国語)' :
+            language === 'vi' ? 'Vietnamese (Tiếng Việt)' :
+            language === "pt-br" ? "Brazilian Portuguese (Português Brasileiro)" :
+            language === "fr" ? "Français (French)" :
+            language === "ru" ? "Русский (Russian)" :
+            'English'}`;
+
+      // Mode-specific opening: what the source material is and what the LLM
+      // should (and should not) focus on. Everything after this (language,
+      // diagram guidance, suggested sections, XML schema, closing rules) is
+      // shared between repo and website prompts.
+      const subjectIntro = isWebsite
+        ? `Analyze this crawled website (${repo}) and create a wiki structure for it.
+
+1. The crawled page tree (each entry is one page's local Markdown file, its path mirrors the site's own URL structure; front matter on each file has the original URL and a "likely_user_content" hint -- pages flagged likely_user_content are profile/comment/forum pages and MUST be excluded from this structure entirely; do not create wiki pages for them and do not summarize or reference their content anywhere):
+<file_tree>
+${fileTree}
+</file_tree>
+
+${technicalAnalysisEnabled
+  ? `I want a TECHNICAL wiki analyzing this website's own structure, architecture, and technology -- e.g. how its pages are organized, what stack/CMS/framework signals are visible, navigation structure, page templates and layout patterns. Do NOT write about the website's subject-matter content itself; focus entirely on the site as a technical artifact.`
+  : `I want a CONTENT wiki about this website's subject matter -- e.g. if this is a fan wiki about a game, produce a fan wiki about that game's content, organized the way the site itself organizes its topics. Do NOT analyze the website's own technical implementation (no HTML/CSS/framework talk); write as if documenting the subject the site is about, using the crawled pages as your source material. Mirror the site's own page/section structure where sensible.`}
+
+Determine the most logical structure for this wiki based on the crawled content.`
+        : `Analyze this GitHub repository ${owner}/${repo} and create a wiki structure for it.
 
 1. The complete file tree of the project:
 <file_tree>
@@ -946,30 +1101,22 @@ ${fileTree}
 ${readme}
 </readme>
 
-I want to create a wiki for this repository. Determine the most logical structure for a wiki based on the repository's content.
+I want to create a wiki for this repository. Determine the most logical structure for a wiki based on the repository's content.`;
 
-IMPORTANT: The wiki content will be generated in ${language === 'en' ? 'English' :
-            language === 'ja' ? 'Japanese (日本語)' :
-            language === 'zh' ? 'Mandarin Chinese (中文)' :
-            language === 'zh-tw' ? 'Traditional Chinese (繁體中文)' :
-            language === 'es' ? 'Spanish (Español)' :
-            language === 'kr' ? 'Korean (한国語)' :
-            language === 'vi' ? 'Vietnamese (Tiếng Việt)' :
-            language === "pt-br" ? "Brazilian Portuguese (Português Brasileiro)" :
-            language === "fr" ? "Français (French)" :
-            language === "ru" ? "Русский (Russian)" :
-            'English'} language.
+      const comprehensiveSections = isWebsite
+        ? (technicalAnalysisEnabled
+            ? `Create a structured wiki with sections such as:
+- Overview (what the site is, and this analysis' scope)
+- Site Architecture (page structure, navigation, routing patterns)
+- Technology Stack (frameworks/CMS/libraries detected)
+- Page Templates & Layout Patterns
+- Notable Technical Features
 
-When designing the wiki structure, include pages that would benefit from visual diagrams, such as:
-- Architecture overviews
-- Data flow descriptions
-- Component relationships
-- Process workflows
-- State machines
-- Class hierarchies
+Each section should contain relevant pages.`
+            : `Create a structured wiki with sections that mirror how the site itself organizes its subject matter (do not force the generic repo-documentation sections below onto site content -- infer the sections from what the site is actually about).
 
-${isComprehensiveView ? `
-Create a structured wiki with the following main sections:
+Each section should contain relevant pages.`)
+        : `Create a structured wiki with the following main sections:
 - Overview (general information about the project)
 - System Architecture (how the system is designed)
 - Core Features (key functionality)
@@ -980,13 +1127,53 @@ Create a structured wiki with the following main sections:
 - Deployment/Infrastructure (how to deploy, what's the infrastructure like)
 - Extensibility and Customization: If the project architecture supports it, explain how to extend or customize its functionality (e.g., plugins, theming, custom modules, hooks).
 
-Each section should contain relevant pages. For example, the "Frontend Components" section might include pages for "Home Page", "Repository Wiki Page", "Ask Component", etc.
+Each section should contain relevant pages. For example, the "Frontend Components" section might include pages for "Home Page", "Repository Wiki Page", "Ask Component", etc.`;
+
+      const relevantFilesNote = isWebsite
+        ? 'The relevant_files should be actual crawled page file paths (from the file tree above) that would be used to generate that page'
+        : 'The relevant_files should be actual files from the repository that would be used to generate that page';
+      const pageFocusNote = isWebsite
+        ? (technicalAnalysisEnabled
+            ? 'Each page should focus on a specific technical aspect of the website (e.g., a page template, a subsystem, navigation)'
+            : 'Each page should focus on a specific topic within the site\'s subject matter, the way the site itself would organize it')
+        : 'Each page should focus on a specific aspect of the codebase (e.g., architecture, key features, setup)';
+      const wikiForNoun = isWebsite ? 'website' : 'repository';
+
+      // Prepare request body
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const requestBody: Record<string, any> = {
+        repo_url: repoUrl,
+        type: effectiveRepoInfo.type,
+        // One-shot structure determination, not a chat -- same reasoning as
+        // the page-generation request body above.
+        enable_tool_calling: false,
+        retrieval_query: isWebsite
+          ? (technicalAnalysisEnabled
+              ? `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page technical wiki analyzing the ${repo} website's own architecture, page structure, and technology -- not its subject content.`
+              : `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page wiki documenting the subject matter of the ${repo} website (its content, topics, and information), structured to mirror how the site itself is organized. Do not analyze the site's technical implementation.`)
+          : `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page technical wiki for ${owner}/${repo}. Focus on architecture, features, data flow, deployment, and the files named in the repository tree.`,
+        messages: [{
+          role: 'user',
+content: `${subjectIntro}
+
+IMPORTANT: The wiki content will be generated in ${languageLine} language.
+
+When designing the wiki structure, include pages that would benefit from visual diagrams, such as:
+- Architecture overviews
+- Data flow descriptions
+- Component relationships
+- Process workflows
+- State machines
+- Class hierarchies
+
+${isComprehensiveView ? `
+${comprehensiveSections}
 
 Return your analysis in the following XML format:
 
 <wiki_structure>
   <title>[Overall title for the wiki]</title>
-  <description>[Brief description of the repository]</description>
+  <description>[Brief description of the ${wikiForNoun}]</description>
   <sections>
     <section id="section-1">
       <title>[Section title]</title>
@@ -1023,7 +1210,7 @@ Return your analysis in the following XML format:
 
 <wiki_structure>
   <title>[Overall title for the wiki]</title>
-  <description>[Brief description of the repository]</description>
+  <description>[Brief description of the ${wikiForNoun}]</description>
   <pages>
     <page id="page-1">
       <title>[Page title]</title>
@@ -1051,9 +1238,9 @@ IMPORTANT FORMATTING INSTRUCTIONS:
 - Start directly with <wiki_structure> and end with </wiki_structure>
 
 IMPORTANT:
-1. Create exactly ${pageCount} pages that make a ${isComprehensiveView ? 'comprehensive' : 'concise'} wiki for this repository. Do not return more or fewer than ${pageCount} <page> elements.
-2. Each page should focus on a specific aspect of the codebase (e.g., architecture, key features, setup)
-3. The relevant_files should be actual files from the repository that would be used to generate that page
+1. Create exactly ${pageCount} pages that make a ${isComprehensiveView ? 'comprehensive' : 'concise'} wiki for this ${wikiForNoun}. Do not return more or fewer than ${pageCount} <page> elements.
+2. ${pageFocusNote}
+3. ${relevantFilesNote}
 4. Return ONLY valid XML with the structure specified above, with no markdown code block delimiters`
         }]
       };
@@ -1456,6 +1643,48 @@ IMPORTANT:
       let fileTreeData = '';
       let readmeContent = '';
       let structureFetchedViaBackendClone = false;
+
+      // 🌐 Website wiki: crawl the site with headless Chromium instead of
+      // cloning a git repo. This is its own branch (not folded into the
+      // provider-clone block below) because it needs the crawl-scope
+      // parameters, not a token, and there is no per-provider REST fallback
+      // for "crawl a website" the way there is for git hosts.
+      if (effectiveRepoInfo.type === 'website') {
+        setLoadingMessage('Crawling website…');
+        try {
+          const startUrl = getRepoUrl(effectiveRepoInfo);
+          const crawlResult = await fetchWebsiteStructureViaCrawl(
+            startUrl,
+            {
+              mode: crawlScopeModeParam,
+              maxPages: crawlMaxPagesParam,
+              subdomains: crawlSubdomainsParam,
+              respectRobots: crawlRespectRobotsParam,
+            },
+            forceFreshGeneration.current,
+            (progress) => {
+              setCloneProgress(progress);
+              if (progress) {
+                setLoadingMessage(`${progress.phase}${progress.percent ? ` ${progress.percent}%` : ''}`);
+              }
+            }
+          );
+          if (crawlResult) {
+            fileTreeData = crawlResult.fileTreeData;
+            readmeContent = '';
+            setDefaultBranch('main');
+            structureFetchedViaBackendClone = true;
+          } else {
+            throw new Error('Website crawl failed or returned no pages.');
+          }
+        } catch (err) {
+          console.error('Website crawl failed:', err);
+          throw err;
+        } finally {
+          setCloneProgress(null);
+          setLoadingMessage(messages.loading?.fetchingStructure || 'Fetching repository structure...');
+        }
+      }
 
       // For a hosted repo, prefer the backend's own local clone (it's
       // about to make -- or already has -- this exact clone for wiki
@@ -1980,6 +2209,131 @@ IMPORTANT:
 
   // Keep the ref pointing at the latest runVulnScan closure.
   useEffect(() => { runVulnScanRef.current = runVulnScan; }, [runVulnScan]);
+
+  // 🌐 Website vulnerability scan -- mirrors runVulnScan above but talks to
+  // /ws/web_vuln_scan and stores a WebVulnReport. Only meaningful when
+  // effectiveRepoInfo.type === 'website'; the site must already be crawled
+  // (the wiki-save effect triggers this after the crawl+wiki generation
+  // finishes, same sequencing runVulnScan uses for repos).
+  const runWebVulnScan = useCallback(async () => {
+    if (webVulnScanStartedRef.current) return;
+    webVulnScanStartedRef.current = true;
+    setWebVulnStatus('running');
+    setWebVulnError(null);
+    setWebVulnReport(null);
+    setWebVulnProgressMessage('Starting scan…');
+    setWebVulnProgressPercent(0);
+
+    const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
+    const wsBaseUrl = serverBaseUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
+    const creds = getSavedApiCredentials(selectedProviderState);
+
+    const payload = {
+      site_url: repoUrl || getRepoUrl(effectiveRepoInfo),
+      owner: effectiveRepoInfo.owner,
+      repo: effectiveRepoInfo.repo,
+      language,
+      provider: selectedProviderState,
+      model: selectedModelState,
+      api_key: creds.api_key || undefined,
+      api_endpoint: creds.api_endpoint || undefined,
+      run_llm: true,
+      enable_deep_scan: deepScanEnabled,
+    };
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`${wsBaseUrl}/ws/web_vuln_scan`);
+        let settled = false;
+        const timeout = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            try { ws.close(); } catch {}
+            reject(new Error('Website vuln scan timed out.'));
+          }
+        }, 10 * 60 * 1000);
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify(payload));
+        };
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'progress') {
+              setWebVulnProgressMessage(msg.message || 'Working…');
+              setWebVulnProgressPercent(typeof msg.percent === 'number' ? msg.percent : null);
+            } else if (msg.type === 'done') {
+              settled = true;
+              clearTimeout(timeout);
+              setWebVulnReport(msg.report as WebVulnReport);
+              setWebVulnStatus('done');
+              setWebVulnProgressPercent(100);
+              try { ws.close(); } catch {}
+              resolve();
+            } else if (msg.type === 'error') {
+              settled = true;
+              clearTimeout(timeout);
+              setWebVulnError(msg.message || 'Scan failed.');
+              setWebVulnStatus('error');
+              try { ws.close(); } catch {}
+              reject(new Error(msg.message || 'Scan failed.'));
+            }
+          } catch {
+            /* ignore non-JSON frames */
+          }
+        };
+        ws.onerror = () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            setWebVulnError('WebSocket error during scan.');
+            setWebVulnStatus('error');
+            reject(new Error('WebSocket error during scan.'));
+          }
+        };
+        ws.onclose = () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            setWebVulnStatus((prev) => prev === 'running' ? 'error' : prev);
+            resolve();
+          }
+        };
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Scan failed.';
+      setWebVulnStatus('error');
+      setWebVulnError(msg);
+    } finally {
+      webVulnScanStartedRef.current = false;
+    }
+  }, [repoUrl, effectiveRepoInfo, language, selectedProviderState, selectedModelState, deepScanEnabled]);
+
+  const loadWebVulnCache = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({
+        owner: effectiveRepoInfo.owner,
+        repo: effectiveRepoInfo.repo,
+        language,
+      });
+      const res = await fetch(`/api/web_vuln_cache?${params.toString()}`);
+      if (res.ok) {
+        const data = (await res.json()) as WebVulnReport;
+        setWebVulnReport(data);
+        setWebVulnStatus('done');
+      }
+    } catch {
+      /* no cache yet -- fine */
+    }
+  }, [effectiveRepoInfo.owner, effectiveRepoInfo.repo, language]);
+
+  useEffect(() => {
+    if (effectiveRepoInfo.type === 'website') {
+      loadWebVulnCache();
+    }
+  }, [effectiveRepoInfo.type, loadWebVulnCache]);
+
+  useEffect(() => { runWebVulnScanRef.current = runWebVulnScan; }, [runWebVulnScan]);
 
   const exportWiki = useCallback(async (format: 'markdown' | 'json' | 'obsidian') => {
     if (!wikiStructure || Object.keys(generatedPages).length === 0) {
@@ -2626,6 +2980,13 @@ IMPORTANT:
               if (vulnScanRequested) {
                 try { runVulnScanRef.current?.(); } catch (e) { console.warn('vuln scan trigger failed', e); }
               }
+              // 🌐 For website wikis, always run the (separate) website
+              // security scan once the site is crawled and the wiki is
+              // generated -- headers/cookies/TLS/exposure checks are basic
+              // hygiene, not an opt-in the way the deep dependency CVE scan is.
+              if (effectiveRepoInfo.type === 'website') {
+                try { runWebVulnScanRef.current?.(); } catch (e) { console.warn('web vuln scan trigger failed', e); }
+              }
               // The backend assigns and returns the new release version number.
               // Refresh the Wiki Release dropdown and select the version just
               // created so the dropdown reflects the wiki now on screen.
@@ -3046,6 +3407,43 @@ IMPORTANT:
                 </div>
               )}
 
+              {/* 🌐 Website Security entry -- same swap-the-panel pattern as
+                  the dependency Security Analysis button above, but for
+                  website wikis (always runs, not opt-in -- see the
+                  wiki-save effect's website branch). */}
+              {effectiveRepoInfo.type === 'website' && (
+                <div className="mb-5">
+                  <button
+                    onClick={() => setViewMode('security')}
+                    className={`flex items-center w-full text-xs px-3 py-2 rounded-md border transition-colors hover:cursor-pointer ${
+                      viewMode === 'security'
+                        ? 'bg-[var(--accent-primary)]/15 text-[var(--accent-primary)] border-[var(--accent-primary)]/40'
+                        : 'bg-[var(--background)] text-[var(--foreground)] border-[var(--border-color)] hover:bg-[var(--background)]/80'
+                    }`}
+                  >
+                    <span className="mr-2">🌐</span>
+                    Website Security
+                    {webVulnReport && webVulnReport.total_findings > 0 && (
+                      <span className="ml-auto text-[var(--highlight)] font-mono">
+                        {webVulnReport.total_findings}
+                      </span>
+                    )}
+                    {webVulnStatus === 'running' && (
+                      <span className="ml-auto text-[var(--muted)] animate-pulse">scanning…</span>
+                    )}
+                  </button>
+                  {viewMode === 'security' && webVulnStatus !== 'running' && (
+                    <button
+                      onClick={() => runWebVulnScan()}
+                      className="mt-2 flex items-center w-full text-[11px] px-3 py-1.5 bg-[var(--background)] text-[var(--muted)] rounded-md border border-[var(--border-color)] hover:text-[var(--foreground)] transition-colors"
+                    >
+                      <FaSync className="mr-2" />
+                      Re-run scan
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* Export buttons */}
               {Object.keys(generatedPages).length > 0 && (
                 <div className="mb-5">
@@ -3122,7 +3520,30 @@ IMPORTANT:
 
             {/* Wiki Content */}
             <div id="wiki-content" className="wiki-content">
-              {viewMode === 'security' ? (
+              {viewMode === 'security' && effectiveRepoInfo.type === 'website' ? (
+                <div className="w-full p-2">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-xl font-bold text-[var(--foreground)] font-serif">
+                      🌐 Website Security
+                    </h3>
+                    <button
+                      onClick={() => setViewMode('wiki')}
+                      className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-1.5 rounded-md border border-[var(--border-color)] text-[var(--muted)] hover:text-[var(--accent-primary)] hover:border-[var(--accent-primary)] transition-colors"
+                    >
+                      <FaBookOpen className="text-xs" />
+                      Back to wiki
+                    </button>
+                  </div>
+                  <WebVulnSection
+                    report={webVulnReport}
+                    status={webVulnStatus}
+                    progressMessage={webVulnProgressMessage}
+                    progressPercent={webVulnProgressPercent}
+                    errorMessage={webVulnError || undefined}
+                    onRetry={runWebVulnScan}
+                  />
+                </div>
+              ) : viewMode === 'security' ? (
                 <div className="w-full p-2">
                   <div className="flex items-center justify-between mb-3">
                     <h3 className="text-xl font-bold text-[var(--foreground)] font-serif">

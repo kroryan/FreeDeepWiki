@@ -19,10 +19,10 @@
   },
   "home": {
     "welcome": "Welcome to FreeDeepWiki",
-    "welcomeTagline": "AI-powered documentation for your code repositories",
-    "description": "Generate comprehensive documentation from GitHub, GitLab, or Bitbucket repositories with just a few clicks.",
+    "welcomeTagline": "AI-powered documentation for code, websites, and offline archives",
+    "description": "Generate comprehensive wikis from GitHub, GitLab, or Bitbucket repositories, local folders, ZIM archives, or any live website -- with an optional built-in security scan (dependency CVEs, secrets, SAST, and deep website vulnerability scanning) for repos and sites alike.",
     "quickStart": "Quick Start",
-    "enterRepoUrl": "Enter a repository URL in one of these formats:",
+    "enterRepoUrl": "Enter a repository URL, a local folder path, or a website URL:",
     "advancedVisualization": "Advanced Visualization with Mermaid Diagrams",
     "diagramDescription": "FreeDeepWiki automatically generates interactive diagrams to help you understand code structure and relationships:",
     "flowDiagram": "Flow Diagram",

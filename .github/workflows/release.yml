@@ -110,7 +110,7 @@ jobs:
           # 2. Copy launcher (onedir build: a folder containing the exe +
           # _internal/, not a single file) and assets
           cp -r dist/freedeepwiki/. AppDir/usr/bin/
-          cp public/freedeepwiki.svg AppDir/freedeepwiki.svg
+          cp public/freedeepwiki.png AppDir/freedeepwiki.png
           
           # 3. Create AppRun script
           cat << 'EOF' > AppDir/AppRun

@@ -176,6 +176,16 @@ class VulnReport:
     graph: Dict[str, Any] = field(default_factory=dict)
     # Whether LLM analysis was run
     ai_analyzed: bool = False
+    # Optional Docker-toolkit pass over the repo (gitleaks secret detection +
+    # semgrep SAST) -- see api.web_vuln_scanner.docker_tools.run_code_scan_toolkit.
+    # Uses the same finding shape as the web scanner (WebFinding.to_dict())
+    # since these are file/line findings, not package/CVE findings.
+    code_scan_findings: List[Dict[str, Any]] = field(default_factory=list)
+    code_scan_ran: bool = False
+    # Consolidated, prioritized "Suggested Solutions" page -- see
+    # api.vuln_common.remediation.build_remediation_plan. Every scan type
+    # (dependency/web/code) produces one of these.
+    remediation_plan: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

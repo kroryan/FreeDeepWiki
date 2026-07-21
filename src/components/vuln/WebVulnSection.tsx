@@ -1,19 +1,15 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
-import {
-  VulnReport,
-  CVEFinding,
-  VulnScanStatus,
-} from './types';
-import VulnOverview from './VulnOverview';
-import VulnFindingCard from './VulnFindingCard';
-import VulnDetailDrawer from './VulnDetailDrawer';
-import VulnGraph3D from './VulnGraph3D';
+import { WebVulnReport, WebFinding } from './webTypes';
+import { VulnScanStatus } from './types';
+import WebVulnOverview from './WebVulnOverview';
+import WebFindingCard from './WebFindingCard';
+import WebFindingDetailDrawer from './WebFindingDetailDrawer';
 import VulnRemediationPlan from './VulnRemediationPlan';
 
 interface Props {
-  report: VulnReport | null;
+  report: WebVulnReport | null;
   status: VulnScanStatus;
   progressMessage?: string;
   progressPercent?: number | null;
@@ -21,39 +17,37 @@ interface Props {
   onRetry?: () => void;
 }
 
-type Tab = 'client' | 'server' | 'dependencies' | 'graph' | 'solutions';
+type Tab = 'headers' | 'cookies' | 'tls' | 'exposure' | 'cve' | 'solutions';
 
-export default function VulnSection({
+export default function WebVulnSection({
   report, status, progressMessage, progressPercent, errorMessage, onRetry,
 }: Props) {
-  const [tab, setTab] = useState<Tab>('client');
-  const [selected, setSelected] = useState<CVEFinding | null>(null);
+  const [tab, setTab] = useState<Tab>('exposure');
+  const [selected, setSelected] = useState<WebFinding | null>(null);
 
   const enabledTabs = useMemo<Tab[]>(() => {
-    if (!report) return ['client', 'server', 'dependencies', 'graph'];
+    if (!report) return ['headers', 'cookies', 'tls', 'exposure', 'cve'];
     const t: Tab[] = [];
-    if (report.client_findings.length) t.push('client');
-    if (report.server_findings.length) t.push('server');
-    if (report.dependency_findings.length) t.push('dependencies');
-    t.push('graph');
+    if (report.header_findings.length) t.push('headers');
+    if (report.cookie_findings.length) t.push('cookies');
+    if (report.tls_findings.length) t.push('tls');
+    if (report.exposure_findings.length) t.push('exposure');
+    if (report.cve_findings.length) t.push('cve');
     if (report.remediation_plan?.steps?.length) t.push('solutions');
-    return t;
+    return t.length ? t : ['exposure'];
   }, [report]);
 
-  // keep tab valid
   const activeTab: Tab = enabledTabs.includes(tab) ? tab : enabledTabs[0];
 
   if (status === 'running' && !report) {
-    return (
-      <ScanProgressView message={progressMessage} percent={progressPercent} />
-    );
+    return <ScanProgressView message={progressMessage} percent={progressPercent} />;
   }
 
   if (status === 'error' && !report) {
     return (
       <div className="p-6 rounded-md border border-[var(--border-color)] bg-[var(--card-bg)]">
         <h3 className="text-base font-semibold text-[var(--highlight)] mb-2">
-          🔐 Security scan failed
+          🌐 Website security scan failed
         </h3>
         <p className="text-sm text-[var(--foreground)]/80 mb-4 break-words">
           {errorMessage || 'Unknown error.'}
@@ -74,22 +68,23 @@ export default function VulnSection({
   if (!report) {
     return (
       <div className="p-6 rounded-md border border-[var(--border-color)] bg-[var(--card-bg)] text-sm text-[var(--muted)]">
-        No vulnerability report available.
+        No website vulnerability report available.
       </div>
     );
   }
 
-  const findings: CVEFinding[] =
-    activeTab === 'client' ? report.client_findings
-    : activeTab === 'server' ? report.server_findings
-    : activeTab === 'dependencies' ? report.dependency_findings
+  const findings: WebFinding[] =
+    activeTab === 'headers' ? report.header_findings
+    : activeTab === 'cookies' ? report.cookie_findings
+    : activeTab === 'tls' ? report.tls_findings
+    : activeTab === 'exposure' ? report.exposure_findings
+    : activeTab === 'cve' ? report.cve_findings
     : [];
 
   return (
     <div className="space-y-4">
-      <VulnOverview report={report} />
+      <WebVulnOverview report={report} />
 
-      {/* tabs */}
       <div className="flex flex-wrap gap-1 border-b border-[var(--border-color)]">
         {enabledTabs.map((t) => (
           <button
@@ -107,41 +102,32 @@ export default function VulnSection({
         ))}
       </div>
 
-      {activeTab === 'graph' ? (
-        <VulnGraph3D
-          graph={report.graph}
-          onNodeClick={(node) => {
-            // open the drawer with the matching finding when a CVE node is clicked
-            if (node.type !== 'cve') return;
-            const f = report.all_findings.find((x) => x.id === node.label) || null;
-            setSelected(f);
-          }}
-        />
-      ) : activeTab === 'solutions' ? (
+      {activeTab === 'solutions' ? (
         <VulnRemediationPlan plan={report.remediation_plan} />
       ) : findings.length === 0 ? (
         <div className="p-6 rounded-md border border-[var(--border-color)] bg-[var(--card-bg)] text-sm text-[var(--muted)]">
-          No vulnerabilities in this category. 🎉
+          No findings in this category. 🎉
         </div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
           {findings.map((f) => (
-            <VulnFindingCard key={`${f.id}-${f.package_name}`} finding={f} onClick={setSelected} />
+            <WebFindingCard key={f.id} finding={f} onClick={setSelected} />
           ))}
         </div>
       )}
 
-      <VulnDetailDrawer finding={selected} onClose={() => setSelected(null)} />
+      <WebFindingDetailDrawer finding={selected} onClose={() => setSelected(null)} />
     </div>
   );
 }
 
-function tabLabel(t: Tab, report: VulnReport): string {
+function tabLabel(t: Tab, report: WebVulnReport): string {
   switch (t) {
-    case 'client': return `🖥️ Client (${report.client_findings.length})`;
-    case 'server': return `🔒 Server (${report.server_findings.length})`;
-    case 'dependencies': return `📦 Dependencies (${report.dependency_findings.length})`;
-    case 'graph': return `🕸️ Graph`;
+    case 'headers': return `📋 Headers (${report.header_findings.length})`;
+    case 'cookies': return `🍪 Cookies (${report.cookie_findings.length})`;
+    case 'tls': return `🔒 TLS (${report.tls_findings.length})`;
+    case 'exposure': return `🔓 Exposure (${report.exposure_findings.length})`;
+    case 'cve': return `🐛 CVEs (${report.cve_findings.length})`;
     case 'solutions': return `🛠️ Solutions`;
   }
 }
@@ -150,7 +136,7 @@ function ScanProgressView({ message, percent }: { message?: string; percent?: nu
   return (
     <div className="p-6 rounded-md border border-[var(--border-color)] bg-[var(--card-bg)]">
       <h3 className="text-base font-semibold text-[var(--accent-primary)] mb-3">
-        🔐 Scanning for vulnerabilities…
+        🌐 Scanning website for vulnerabilities…
       </h3>
       <div className="w-full h-2 rounded-full bg-[var(--background)] overflow-hidden mb-3">
         <div

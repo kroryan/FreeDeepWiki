@@ -301,7 +301,45 @@ def get_repo_structure(repo_url: str, repo_type: str, access_token: str = None) 
         "readme": readme_content,
     }
 
-def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder: bool = None, 
+def _exclude_website_user_content(documents: List[Document], repo_dir: str) -> List[Document]:
+    """For a crawled website, drop pages the crawler flagged as likely
+    user-generated content (profile/comment/forum pages -- see
+    api.web_crawler.crawler._is_user_content) from the RAG index entirely.
+
+    This is a hard filter, independent of the wiki-structure prompt telling
+    the LLM to exclude these pages: the prompt is advisory (the LLM could
+    still cite one via a retrieval match), while this guarantees such pages
+    are never embedded/retrievable in the first place. User-generated
+    content is excluded entirely -- there is no separate analysis pass for it.
+
+    A no-op for anything that isn't a crawled website (no _site_meta.json
+    present).
+    """
+    try:
+        from api.web_crawler.site_store import read_site_meta
+    except ImportError:
+        return documents
+    meta = read_site_meta(repo_dir)
+    pages = meta.get("pages") or []
+    if not pages:
+        return documents
+    user_content_paths = {
+        p["relpath"] for p in pages
+        if isinstance(p, dict) and p.get("likely_user_content")
+    }
+    if not user_content_paths:
+        return documents
+    filtered = [
+        d for d in documents
+        if (d.meta_data or {}).get("file_path") not in user_content_paths
+    ]
+    dropped = len(documents) - len(filtered)
+    if dropped:
+        logger.info(f"Excluded {dropped} likely-user-content page(s) from website RAG index")
+    return filtered
+
+
+def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder: bool = None,
                       excluded_dirs: List[str] = None, excluded_files: List[str] = None,
                       included_dirs: List[str] = None, included_files: List[str] = None):
     """
@@ -1017,8 +1055,21 @@ class DatabaseManager:
             root_path = get_adalflow_default_root_path()
 
             os.makedirs(root_path, exist_ok=True)
+            # website: the "repo" is a directory of crawled Markdown pages the
+            # /ws/website/crawl endpoint already produced (see
+            # api.web_crawler.site_store.website_local_dir) -- there is
+            # nothing to git-clone, so skip straight to using that directory.
+            if repo_type == "website":
+                from api.web_crawler.site_store import website_local_dir, website_repo_name
+                repo_name = website_repo_name(repo_url_or_path)
+                save_repo_dir = website_local_dir(repo_url_or_path)
+                if not (os.path.isdir(save_repo_dir) and os.listdir(save_repo_dir)):
+                    raise ValueError(
+                        f"No crawled data found for {repo_url_or_path} at {save_repo_dir}. "
+                        "The site must be crawled via /ws/website/crawl before generating a wiki."
+                    )
             # url
-            if repo_url_or_path.startswith("https://") or repo_url_or_path.startswith("http://"):
+            elif repo_url_or_path.startswith("https://") or repo_url_or_path.startswith("http://"):
                 # Extract the repository name from the URL
                 repo_name = self._extract_repo_name_from_url(repo_url_or_path, repo_type)
                 logger.info(f"Extracted repo name: {repo_name}")
@@ -1126,6 +1177,7 @@ class DatabaseManager:
             included_dirs=included_dirs,
             included_files=included_files
         )
+        documents = _exclude_website_user_content(documents, self.repo_paths["save_repo_dir"])
         self.db = transform_documents_and_save_to_db(
             documents, self.repo_paths["save_db_file"], embedder_type=embedder_type
         )

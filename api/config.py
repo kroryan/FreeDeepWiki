@@ -315,6 +315,9 @@ DEFAULT_EXCLUDED_DIRS: List[str] = [
 ]
 
 DEFAULT_EXCLUDED_FILES: List[str] = [
+    # Website-crawl manifest (api.web_crawler.site_store) -- crawl metadata,
+    # never wiki source content.
+    "_site_meta.json",
     "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json", "poetry.lock",
     "Pipfile.lock", "requirements.txt.lock", "Cargo.lock", "composer.lock",
     ".lock", ".DS_Store", "Thumbs.db", "desktop.ini", "*.lnk", ".env",

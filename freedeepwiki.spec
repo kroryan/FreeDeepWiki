@@ -147,6 +147,7 @@ if is_win:
         target_arch=None,
         codesign_identity=None,
         entitlements_file=None,
+        icon='icono.ico',
     )
 else:
     # Linux uses onedir: the AppImage already wraps everything into a single

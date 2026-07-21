@@ -19,10 +19,10 @@
     },
     "home": {
       "welcome": "Bienvenue sur FreeDeepWiki",
-      "welcomeTagline": "Documentation propulsée par l’IA pour vos dépôts de code",
-      "description": "Générez une documentation complète à partir de dépôts GitHub, GitLab ou Bitbucket en quelques clics.",
+      "welcomeTagline": "Documentation propulsée par l’IA pour le code, les sites web et les archives hors-ligne",
+      "description": "Générez des wikis complets à partir de dépôts GitHub, GitLab ou Bitbucket, de dossiers locaux, d’archives ZIM, ou de n’importe quel site web en ligne -- avec une analyse de sécurité optionnelle intégrée (CVE des dépendances, secrets, SAST et analyse approfondie des vulnérabilités web) pour les dépôts comme pour les sites.",
       "quickStart": "Démarrage rapide",
-      "enterRepoUrl": "Entrez une URL de dépôt dans l’un des formats suivants :",
+      "enterRepoUrl": "Entrez une URL de dépôt, un chemin de dossier local, ou une URL de site web :",
       "advancedVisualization": "Visualisation avancée avec des diagrammes Mermaid",
       "diagramDescription": "FreeDeepWiki génère automatiquement des diagrammes interactifs pour vous aider à comprendre la structure du code et ses relations :",
       "flowDiagram": "Diagramme de flux",
