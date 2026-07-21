@@ -1513,6 +1513,23 @@ IMPORTANT:
         }
       }
 
+      // The LLM's XML parsed without throwing but produced zero <page>
+      // elements -- previously this fell through to setting an empty-pages
+      // wikiStructure and silently stopping the loading spinner with no
+      // pages and no error, which reads as "generation finished" when
+      // nothing was actually generated (seen in practice with the
+      // website/technical-wiki prompt against smaller/cloud models that
+      // sometimes return a <wiki_structure> with a title/description but an
+      // empty <pages> section). Fail loudly and retriably instead, before
+      // any half-built state is committed.
+      if (pages.length === 0) {
+        throw new Error(
+          language === 'es'
+            ? 'El modelo no devolvió ninguna página para esta wiki. Vuelve a intentar la generación (a veces ayuda cambiar de modelo o reducir el número de páginas).'
+            : 'The model did not return any pages for this wiki. Retry the generation (switching models or reducing the page count sometimes helps).'
+        );
+      }
+
       // Create wiki structure
       const wikiStructure: WikiStructure = {
         id: 'wiki',
@@ -1524,10 +1541,11 @@ IMPORTANT:
       };
 
       setWikiStructure(wikiStructure);
-      setCurrentPageId(pages.length > 0 ? pages[0].id : undefined);
+      setCurrentPageId(pages[0].id);
 
       // Start generating content for all pages with controlled concurrency
-      if (pages.length > 0) {
+      // (pages.length > 0 guaranteed by the guard clause above).
+      {
         // Mark all pages as in progress
         const initialInProgress = new Set(pages.map(p => p.id));
         setPagesInProgress(initialInProgress);
@@ -1573,14 +1591,10 @@ IMPORTANT:
           }
 
           // Additional check: If the queue started empty or becomes empty and no requests were started/active
-          if (queue.length === 0 && activeRequests === 0 && pages.length > 0 && pagesInProgress.size === 0) {
+          if (queue.length === 0 && activeRequests === 0 && pagesInProgress.size === 0) {
             // This handles the case where the queue might finish before the finally blocks fully update activeRequests
             // or if the initial queue was processed very quickly
             console.log("Queue empty and no active requests after loop, ensuring loading is false.");
-            setIsLoading(false);
-            setLoadingMessage(undefined);
-          } else if (pages.length === 0) {
-            // Handle case where there were no pages to begin with
             setIsLoading(false);
             setLoadingMessage(undefined);
           }
@@ -1588,10 +1602,6 @@ IMPORTANT:
 
         // Start processing the queue
         processQueue();
-      } else {
-        // Set loading to false if there were no pages found
-        setIsLoading(false);
-        setLoadingMessage(undefined);
       }
 
     } catch (error) {
