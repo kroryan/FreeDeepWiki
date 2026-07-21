@@ -109,6 +109,12 @@ export default function Home() {
           setExcludedFiles(config.excludedFiles || '');
           setIncludedDirs(config.includedDirs || '');
           setIncludedFiles(config.includedFiles || '');
+          if (config.enableVulnScan !== undefined) setEnableVulnScan(config.enableVulnScan);
+          if (config.vulnClient !== undefined) setVulnClient(config.vulnClient);
+          if (config.vulnServer !== undefined) setVulnServer(config.vulnServer);
+          if (config.vulnDeps !== undefined) setVulnDeps(config.vulnDeps);
+          if (config.nvdKey !== undefined) setNvdKey(config.nvdKey || '');
+          if (config.includeVulnsInObsidian !== undefined) setIncludeVulnsInObsidian(config.includeVulnsInObsidian);
         }
       }
     } catch (error) {
@@ -150,6 +156,15 @@ export default function Home() {
   const [includedFiles, setIncludedFiles] = useState('');
   const [selectedPlatform, setSelectedPlatform] = useState<'github' | 'gitlab' | 'bitbucket'>('github');
   const [accessToken, setAccessToken] = useState('');
+
+  // 🔐 Vulnerability scan (Security Analysis) config
+  const [enableVulnScan, setEnableVulnScan] = useState<boolean>(false);
+  const [vulnClient, setVulnClient] = useState<boolean>(true);
+  const [vulnServer, setVulnServer] = useState<boolean>(true);
+  const [vulnDeps, setVulnDeps] = useState<boolean>(true);
+  const [nvdKey, setNvdKey] = useState<string>('');
+  const [includeVulnsInObsidian, setIncludeVulnsInObsidian] = useState<boolean>(true);
+
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState<string>(language);
@@ -413,6 +428,12 @@ export default function Home() {
           excludedFiles,
           includedDirs,
           includedFiles,
+          enableVulnScan,
+          vulnClient,
+          vulnServer,
+          vulnDeps,
+          nvdKey,
+          includeVulnsInObsidian,
         };
         existingConfigs[currentRepoUrl] = configToSave;
         localStorage.setItem(REPO_CONFIG_CACHE_KEY, JSON.stringify(existingConfigs));
@@ -475,6 +496,18 @@ export default function Home() {
     // Add comprehensive parameter
     params.append('comprehensive', isComprehensiveView.toString());
     params.append('pages', pageCount.toString());
+
+    // 🔐 Security Analysis (vulnerability scan) parameters
+    if (enableVulnScan) {
+      params.append('vuln_scan', '1');
+      params.append('vuln_client', vulnClient ? '1' : '0');
+      params.append('vuln_server', vulnServer ? '1' : '0');
+      params.append('vuln_deps', vulnDeps ? '1' : '0');
+      params.append('vuln_obsidian', includeVulnsInObsidian ? '1' : '0');
+      if (nvdKey) {
+        params.append('nvd_key', encodeURIComponent(nvdKey));
+      }
+    }
 
     const queryString = params.toString() ? `?${params.toString()}` : '';
 
@@ -649,6 +682,18 @@ export default function Home() {
             setIncludedFiles={setIncludedFiles}
             onSubmit={handleGenerateWiki}
             isSubmitting={isSubmitting}
+            enableVulnScan={enableVulnScan}
+            setEnableVulnScan={setEnableVulnScan}
+            vulnClient={vulnClient}
+            setVulnClient={setVulnClient}
+            vulnServer={vulnServer}
+            setVulnServer={setVulnServer}
+            vulnDeps={vulnDeps}
+            setVulnDeps={setVulnDeps}
+            nvdKey={nvdKey}
+            setNvdKey={setNvdKey}
+            includeVulnsInObsidian={includeVulnsInObsidian}
+            setIncludeVulnsInObsidian={setIncludeVulnsInObsidian}
             authRequired={authRequired}
             authCode={authCode}
             setAuthCode={setAuthCode}

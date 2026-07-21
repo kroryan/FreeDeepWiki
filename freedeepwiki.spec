@@ -41,6 +41,7 @@ else:
 # Collect all hidden submodules of dynamic libraries
 packages_to_collect = [
     'api',
+    'api.vuln_scanner',
     'scripts',
     'fastapi',
     'uvicorn',

@@ -133,6 +133,11 @@ class WikiExportRequest(BaseModel):
     format: Literal["markdown", "json", "obsidian"] = Field(..., description="Export format (markdown, json, or obsidian vault zip)")
     title: Optional[str] = Field(None, description="Wiki title (used for the Obsidian vault name/index)")
     version: Optional[int] = Field(None, description="Wiki release version being exported (informational)")
+    # 🔐 Security Analysis — optional vulnerability report to embed in the
+    # Obsidian vault (ignored for markdown/json exports).
+    vuln_report: Optional[Dict[str, Any]] = Field(None, description="Optional vulnerability report dict to include in the Obsidian vault")
+    include_vulns: bool = Field(False, description="Include the 🔐 Security folder in the Obsidian vault")
+    include_vuln_graph: bool = Field(True, description="Include the vulnerability graph (Canvas + Mermaid) in the Security folder")
 
 class PageEditRequest(BaseModel):
     """Model for saving a manually or AI-edited wiki page's content."""
@@ -443,6 +448,9 @@ async def export_wiki(request: WikiExportRequest):
                 request.pages,
                 title=request.title or f"{repo_name} Wiki",
                 version=request.version,
+                vuln_report=request.vuln_report,
+                include_vulns=request.include_vulns,
+                include_vuln_graph=request.include_vuln_graph,
             )
             version_suffix = f"_v{request.version}" if request.version else ""
             filename = f"{repo_name}_wiki{version_suffix}_{timestamp}_obsidian.zip"
@@ -608,6 +616,9 @@ def generate_obsidian_vault_export(
     pages: List[WikiPage],
     title: str = "Wiki",
     version: Optional[int] = None,
+    vuln_report: Optional[Dict[str, Any]] = None,
+    include_vulns: bool = False,
+    include_vuln_graph: bool = True,
 ) -> bytes:
     """Generate a complete Obsidian vault as a .zip (returned as bytes).
 
@@ -618,6 +629,8 @@ def generate_obsidian_vault_export(
                                      "Related" section using [[wikilinks]]
           .obsidian/app.json       – minimal config so Obsidian opens the folder
                                      as a vault directly after unzipping
+          🔐 Security/             – (optional) vulnerability report notes +
+                                     Canvas board, when include_vulns is set
 
     An Obsidian vault is just a folder of Markdown files, so the zip can be
     unzipped anywhere (Windows/macOS/Linux) and opened with
@@ -650,6 +663,19 @@ def generate_obsidian_vault_export(
         home += "## Pages\n\n"
         for page in pages:
             home += f"- [[{id_to_name[page.id]}]]\n"
+
+        # 🔐 Security section link + folder (optional)
+        if include_vulns and vuln_report:
+            home += "\n## Security\n\n"
+            home += "- [[Security Overview]]\n"
+            try:
+                from api.vuln_scanner.obsidian_export import build_security_folder
+                for rel_path, content in build_security_folder(
+                        vuln_report, include_graph=include_vuln_graph).items():
+                    zf.writestr(f"{vault_name}/{rel_path}", content)
+            except Exception as exc:
+                logger.warning("Failed to build Security folder for Obsidian export: %s", exc)
+
         zf.writestr(f"{vault_name}/Home.md", home)
 
         # One note per page.
@@ -692,6 +718,54 @@ app.add_websocket_route("/ws/chat", handle_websocket_chat)
 
 WIKI_CACHE_DIR = os.path.join(get_adalflow_default_root_path(), "wikicache")
 os.makedirs(WIKI_CACHE_DIR, exist_ok=True)
+
+# --- Vulnerability scan cache helpers ---
+# Vulnerability reports live in the same portable wikicache dir as the wiki
+# itself (no new storage location). Keyed by (repo_type, owner, repo, language)
+# -- one latest report per repo/language; a re-scan overwrites it.
+VULN_CACHE_PREFIX = "freedeepwiki_vulns"
+
+
+def _vuln_cache_path(repo_type: str, owner: str, repo: str, language: str) -> str:
+    return os.path.join(
+        WIKI_CACHE_DIR,
+        f"{VULN_CACHE_PREFIX}_{repo_type}_{owner}_{repo}_{language}.json",
+    )
+
+
+def save_vuln_cache(report: dict) -> str:
+    """Persist a vulnerability report dict to the wikicache dir. Returns path."""
+    path = _vuln_cache_path(
+        report.get("repo_type", ""),
+        report.get("owner", ""),
+        report.get("repo", ""),
+        report.get("language", "en"),
+    )
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, ensure_ascii=False, indent=2)
+    return path
+
+
+def read_vuln_cache(repo_type: str, owner: str, repo: str, language: str) -> Optional[dict]:
+    path = _vuln_cache_path(repo_type, owner, repo, language)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as exc:
+        logger.warning("Failed to read vuln cache %s: %s", path, exc)
+        return None
+
+
+def _split_newline_filters(value) -> List[str]:
+    """Normalise the newline-separated filter strings the frontend sends
+    (same convention as the chat request's excluded_dirs/excluded_files)."""
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [line.strip() for line in str(value).splitlines() if line.strip()]
 
 def _repo_cache_prefix(repo_type: str, owner: str, repo: str, language: str) -> str:
     """Filename prefix shared by every release of one repo/language/type."""
@@ -1249,6 +1323,117 @@ async def ws_repo_clone(websocket: WebSocket):
             await websocket.close()
         except Exception:
             pass
+
+
+@app.websocket("/ws/vuln_scan")
+async def ws_vuln_scan(websocket: WebSocket):
+    """Runs a CVE vulnerability scan over the locally-cloned repo and streams
+    progress back, then returns the full report (and persists it to wikicache).
+
+    Sequential with wiki generation by design: the repo must already be cloned
+    locally (wiki generation clones it via DatabaseManager._create_repo / the
+    /ws/repo/clone flow), so this runs *after* the wiki is generated and reuses
+    the exact same clone dir -- no second download.
+
+    Inbound: one JSON message with the scan parameters.
+    Outbound: {"type":"progress","message","percent"} frames, then a final
+    {"type":"done","report":{...}} (or {"type":"error","message"}).
+
+    See runVulnScan() in src/app/[owner]/[repo]/page.tsx for the client side.
+    """
+    await websocket.accept()
+    try:
+        raw = await websocket.receive_text()
+        payload = json.loads(raw)
+
+        repo_url = (payload.get("repo_url") or "").strip()
+        repo_type = payload.get("repo_type") or "github"
+        language = payload.get("language") or "en"
+        provider = payload.get("provider") or "google"
+        model = payload.get("model") or None
+        api_key = payload.get("api_key") or None
+        api_endpoint = payload.get("api_endpoint") or None
+        local_path = (payload.get("local_path") or "").strip()
+        owner = payload.get("owner") or ""
+        repo = payload.get("repo") or ""
+        nvd_key = payload.get("nvd_key") or None
+        enable_client = bool(payload.get("enable_client", True))
+        enable_server = bool(payload.get("enable_server", True))
+        enable_deps = bool(payload.get("enable_deps", True))
+        run_llm = bool(payload.get("run_llm", True))
+        excluded_dirs = _split_newline_filters(payload.get("excluded_dirs"))
+        excluded_files = _split_newline_filters(payload.get("excluded_files"))
+
+        if not repo_url and not local_path:
+            await websocket.send_json(
+                {"type": "error", "message": "repo_url or local_path is required"})
+            return
+
+        # Resolve the local clone dir (reuse the same clone wiki gen made).
+        if repo_type == "local":
+            repo_dir = local_path or repo_url
+        else:
+            from api.data_pipeline import _local_clone_dir as _get_local_clone_dir
+            repo_dir = _get_local_clone_dir(repo_url, repo_type)
+
+        if not repo_dir or not os.path.isdir(repo_dir):
+            await websocket.send_json({"type": "error",
+                "message": (f"Repository clone not found at {repo_dir}. "
+                            "Generate the wiki first so the repo is cloned locally.")})
+            return
+
+        from api.vuln_scanner.orchestrator import run_vuln_scan
+
+        async def on_progress(msg: str, pct: Optional[int] = None):
+            await websocket.send_json(
+                {"type": "progress", "message": msg, "percent": pct})
+
+        report = await run_vuln_scan(
+            repo_dir=repo_dir, repo_url=repo_url, repo_type=repo_type,
+            owner=owner, repo=repo, language=language,
+            provider=provider, model=model, api_key=api_key,
+            api_endpoint=api_endpoint,
+            excluded_dirs=excluded_dirs, excluded_files=excluded_files,
+            nvd_key=nvd_key, enable_client=enable_client,
+            enable_server=enable_server, enable_deps=enable_deps,
+            run_llm=run_llm, on_progress=on_progress,
+        )
+
+        report_dict = report.to_dict()
+        try:
+            save_vuln_cache(report_dict)
+        except Exception as exc:
+            logger.warning("Failed to persist vuln cache: %s", exc)
+
+        await websocket.send_json({"type": "done", "report": report_dict})
+    except Exception as e:
+        logger.error(f"Error in /ws/vuln_scan: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/vuln_cache")
+async def get_vuln_cache(
+    owner: str = Query(..., description="Repository owner"),
+    repo: str = Query(..., description="Repository name"),
+    repo_type: str = Query(..., description="Repository type (github, gitlab, bitbucket, local)"),
+    language: str = Query("en", description="Wiki language the scan was run for"),
+):
+    """Return the stored vulnerability report for a repo/language, or 404 if
+    none exists (so the frontend can decide whether to offer/run a scan)."""
+    data = read_vuln_cache(repo_type, owner, repo, language)
+    if data is None:
+        raise HTTPException(status_code=404,
+                            detail="No vulnerability scan found for this repo.")
+    return data
+
 
 @app.delete("/api/wiki_cache")
 async def delete_wiki_cache(

@@ -6,6 +6,8 @@ import Markdown from '@/components/Markdown';
 import ModelSelectionModal, { AppliedModelSelection } from '@/components/ModelSelectionModal';
 import ThemeToggle from '@/components/theme-toggle';
 import WikiTreeView from '@/components/WikiTreeView';
+import VulnSection from '@/components/vuln/VulnSection';
+import { VulnReport, VulnScanStatus } from '@/components/vuln/types';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
 import { getSavedApiCredentials } from '@/utils/apiCredentials';
@@ -374,6 +376,16 @@ export default function RepoWikiPage() {
         ? 'github'
         : searchParams.get('type') || 'github';
 
+  // 🔐 Security Analysis (vulnerability scan) params
+  const vulnScanRequested = searchParams.get('vuln_scan') === '1';
+  const vulnClientEnabled = searchParams.get('vuln_client') !== '0';
+  const vulnServerEnabled = searchParams.get('vuln_server') !== '0';
+  const vulnDepsEnabled = searchParams.get('vuln_deps') !== '0';
+  const vulnObsidianInclude = searchParams.get('vuln_obsidian') === '1';
+  const nvdKeyParam = searchParams.get('nvd_key')
+    ? decodeURIComponent(searchParams.get('nvd_key') || '')
+    : '';
+
   // Import language context for translations
   const { messages } = useLanguage();
 
@@ -409,6 +421,23 @@ export default function RepoWikiPage() {
   const [effectiveRepoInfo, setEffectiveRepoInfo] = useState(repoInfo); // Track effective repo info with cached data
   const [embeddingError, setEmbeddingError] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
+
+  // 🔐 Vulnerability scan state (Security Analysis)
+  const [vulnReport, setVulnReport] = useState<VulnReport | null>(null);
+  const [vulnStatus, setVulnStatus] = useState<VulnScanStatus>('idle');
+  const [vulnProgressMessage, setVulnProgressMessage] = useState<string | undefined>();
+  const [vulnProgressPercent, setVulnProgressPercent] = useState<number | null>(null);
+  const [vulnError, setVulnError] = useState<string | null>(null);
+  // 'wiki' shows the normal page content; 'security' swaps the content panel
+  // for the vulnerability section without mutating the LLM-generated wiki tree.
+  const [viewMode, setViewMode] = useState<'wiki' | 'security'>('wiki');
+  const vulnScanStartedRef = useRef(false);
+  // Obsidian export options (only relevant when a vuln report exists).
+  const [exportIncludeVulns, setExportIncludeVulns] = useState<boolean>(true);
+  const [exportIncludeVulnGraph, setExportIncludeVulnGraph] = useState<boolean>(true);
+  // Lets the wiki-save effect kick off the vuln scan without adding
+  // runVulnScan to its dependency list (which would retrigger saves).
+  const runVulnScanRef = useRef<() => void>(() => {});
 
   // Page edit mode (manual textarea + AI-assisted rewrite). Never
   // autosaves -- editedContent only replaces generatedPages[pageId] on an
@@ -1814,6 +1843,145 @@ IMPORTANT:
   }, [owner, repo, determineWikiStructure, currentToken, effectiveRepoInfo, requestInProgress, messages.loading]);
 
   // Function to export wiki content
+  // 🔐 Vulnerability scan: open /ws/vuln_scan, stream progress, store report.
+  // Sequential with wiki generation by design -- runs after the wiki is done
+  // and the repo is already cloned locally, reusing that clone.
+  const runVulnScan = useCallback(async () => {
+    if (vulnScanStartedRef.current) return;
+    vulnScanStartedRef.current = true;
+    setVulnStatus('running');
+    setVulnError(null);
+    setVulnReport(null);
+    setVulnProgressMessage('Starting scan…');
+    setVulnProgressPercent(0);
+
+    const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
+    const wsBaseUrl = serverBaseUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
+    const creds = getSavedApiCredentials(selectedProviderState);
+
+    const payload = {
+      repo_url: repoUrl || getRepoUrl(effectiveRepoInfo),
+      repo_type: repoType,
+      owner: effectiveRepoInfo.owner,
+      repo: effectiveRepoInfo.repo,
+      language,
+      provider: selectedProviderState,
+      model: selectedModelState,
+      api_key: creds.api_key || undefined,
+      api_endpoint: creds.api_endpoint || undefined,
+      local_path: effectiveRepoInfo.localPath || undefined,
+      nvd_key: nvdKeyParam || undefined,
+      enable_client: vulnClientEnabled,
+      enable_server: vulnServerEnabled,
+      enable_deps: vulnDepsEnabled,
+      run_llm: true,
+      excluded_dirs: modelExcludedDirs,
+      excluded_files: modelExcludedFiles,
+    };
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`${wsBaseUrl}/ws/vuln_scan`);
+        let settled = false;
+        const timeout = setTimeout(() => {
+          if (!settled) {
+            settled = true;
+            try { ws.close(); } catch {}
+            reject(new Error('Vuln scan timed out.'));
+          }
+        }, 10 * 60 * 1000);
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify(payload));
+        };
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === 'progress') {
+              setVulnProgressMessage(msg.message || 'Working…');
+              setVulnProgressPercent(typeof msg.percent === 'number' ? msg.percent : null);
+            } else if (msg.type === 'done') {
+              settled = true;
+              clearTimeout(timeout);
+              setVulnReport(msg.report as VulnReport);
+              setVulnStatus('done');
+              setVulnProgressPercent(100);
+              try { ws.close(); } catch {}
+              resolve();
+            } else if (msg.type === 'error') {
+              settled = true;
+              clearTimeout(timeout);
+              setVulnError(msg.message || 'Scan failed.');
+              setVulnStatus('error');
+              try { ws.close(); } catch {}
+              reject(new Error(msg.message || 'Scan failed.'));
+            }
+          } catch {
+            /* ignore non-JSON frames */
+          }
+        };
+        ws.onerror = () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            setVulnError('WebSocket error during scan.');
+            setVulnStatus('error');
+            reject(new Error('WebSocket error during scan.'));
+          }
+        };
+        ws.onclose = () => {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timeout);
+            // If we never got a done/error, treat as error only if still running.
+            setVulnStatus((prev) => prev === 'running' ? 'error' : prev);
+            resolve();
+          }
+        };
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Scan failed.';
+      setVulnStatus('error');
+      setVulnError(msg);
+    } finally {
+      vulnScanStartedRef.current = false;
+    }
+  }, [repoUrl, repoType, effectiveRepoInfo, language, selectedProviderState, selectedModelState,
+      nvdKeyParam, vulnClientEnabled, vulnServerEnabled, vulnDepsEnabled,
+      modelExcludedDirs, modelExcludedFiles]);
+
+  // Load a previously-saved vuln report (if any) so the Security tab is
+  // populated when opening an already-scanned repo, without re-scanning.
+  const loadVulnCache = useCallback(async () => {
+    try {
+      const params = new URLSearchParams({
+        owner: effectiveRepoInfo.owner,
+        repo: effectiveRepoInfo.repo,
+        repo_type: repoType,
+        language,
+      });
+      const res = await fetch(`/api/vuln_cache?${params.toString()}`);
+      if (res.ok) {
+        const data = (await res.json()) as VulnReport;
+        setVulnReport(data);
+        setVulnStatus('done');
+      }
+    } catch {
+      /* no cache yet -- fine */
+    }
+  }, [effectiveRepoInfo.owner, effectiveRepoInfo.repo, repoType, language]);
+
+  // On mount: if the user didn't request a fresh scan, try to load an
+  // existing vuln report from cache so the Security tab works on re-open.
+  useEffect(() => {
+    if (!vulnScanRequested) {
+      loadVulnCache();
+    }
+  }, [vulnScanRequested, loadVulnCache]);
+
+  // Keep the ref pointing at the latest runVulnScan closure.
+  useEffect(() => { runVulnScanRef.current = runVulnScan; }, [runVulnScan]);
+
   const exportWiki = useCallback(async (format: 'markdown' | 'json' | 'obsidian') => {
     if (!wikiStructure || Object.keys(generatedPages).length === 0) {
       setExportError('No wiki content to export');
@@ -1838,20 +2006,30 @@ IMPORTANT:
       // Get repository URL
       const repoUrl = getRepoUrl(effectiveRepoInfo);
 
+      // Build the export request body. For Obsidian, optionally embed the
+      // vulnerability report (🔐 Security folder) when the user opted in and
+      // a report is available.
+      const exportBody: Record<string, unknown> = {
+        repo_url: repoUrl,
+        type: effectiveRepoInfo.type,
+        pages: pagesToExport,
+        format,
+        title: wikiStructure.title,
+        version: selectedWikiVersion ?? undefined,
+      };
+      if (format === 'obsidian' && vulnReport && exportIncludeVulns) {
+        exportBody.vuln_report = vulnReport;
+        exportBody.include_vulns = true;
+        exportBody.include_vuln_graph = exportIncludeVulnGraph;
+      }
+
       // Make API call to export wiki
       const response = await fetch(`/export/wiki`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          repo_url: repoUrl,
-          type: effectiveRepoInfo.type,
-          pages: pagesToExport,
-          format,
-          title: wikiStructure.title,
-          version: selectedWikiVersion ?? undefined,
-        })
+        body: JSON.stringify(exportBody),
       });
 
       if (!response.ok) {
@@ -1890,7 +2068,7 @@ IMPORTANT:
       setIsExporting(false);
       setLoadingMessage(undefined);
     }
-  }, [wikiStructure, generatedPages, effectiveRepoInfo, language, selectedWikiVersion]);
+  }, [wikiStructure, generatedPages, effectiveRepoInfo, language, selectedWikiVersion, vulnReport, exportIncludeVulns, exportIncludeVulnGraph]);
 
   // No longer needed as we use the modal directly
 
@@ -2419,6 +2597,12 @@ IMPORTANT:
               // another release (this exact loop once produced hundreds of
               // duplicate versions from a single generation).
               cacheLoadedSuccessfully.current = true;
+              // 🔐 Kick off the vulnerability scan now that the wiki is
+              // generated and the repo clone is on disk -- only if the user
+              // opted in. Runs once; the ref inside runVulnScan guards repeats.
+              if (vulnScanRequested) {
+                try { runVulnScanRef.current?.(); } catch (e) { console.warn('vuln scan trigger failed', e); }
+              }
               // The backend assigns and returns the new release version number.
               // Refresh the Wiki Release dropdown and select the version just
               // created so the dropdown reflects the wiki now on screen.
@@ -2457,6 +2641,8 @@ IMPORTANT:
       setIsEditingPage(false);
       setEditError(null);
     }
+    // Selecting a wiki page leaves the Security view.
+    setViewMode('wiki');
   };
 
   const startEditingPage = () => {
@@ -2800,6 +2986,43 @@ IMPORTANT:
                 </button>
               </div>
 
+              {/* 🔐 Security Analysis entry — swap the content panel for the
+                  vulnerability section. Shown when the user opted into a scan
+                  for this generation, or when a previous scan's report is
+                  available from cache. */}
+              {(vulnScanRequested || vulnReport) && (
+                <div className="mb-5">
+                  <button
+                    onClick={() => setViewMode('security')}
+                    className={`flex items-center w-full text-xs px-3 py-2 rounded-md border transition-colors hover:cursor-pointer ${
+                      viewMode === 'security'
+                        ? 'bg-[var(--accent-primary)]/15 text-[var(--accent-primary)] border-[var(--accent-primary)]/40'
+                        : 'bg-[var(--background)] text-[var(--foreground)] border-[var(--border-color)] hover:bg-[var(--background)]/80'
+                    }`}
+                  >
+                    <span className="mr-2">🔐</span>
+                    Security Analysis
+                    {vulnReport && vulnReport.total_findings > 0 && (
+                      <span className="ml-auto text-[var(--highlight)] font-mono">
+                        {vulnReport.total_findings}
+                      </span>
+                    )}
+                    {vulnStatus === 'running' && (
+                      <span className="ml-auto text-[var(--muted)] animate-pulse">scanning…</span>
+                    )}
+                  </button>
+                  {viewMode === 'security' && vulnScanRequested && vulnStatus !== 'running' && (
+                    <button
+                      onClick={() => runVulnScan()}
+                      className="mt-2 flex items-center w-full text-[11px] px-3 py-1.5 bg-[var(--background)] text-[var(--muted)] rounded-md border border-[var(--border-color)] hover:text-[var(--foreground)] transition-colors"
+                    >
+                      <FaSync className="mr-2" />
+                      Re-run scan
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* Export buttons */}
               {Object.keys(generatedPages).length > 0 && (
                 <div className="mb-5">
@@ -2833,6 +3056,28 @@ IMPORTANT:
                       {messages.repoPage?.exportAsObsidian || 'Export as Obsidian Vault (.zip)'}
                     </button>
                   </div>
+                  {vulnReport && (
+                    <div className="mt-3 p-2 rounded-md border border-[var(--border-color)] bg-[var(--background)]/40 text-xs space-y-1.5">
+                      <label className="flex items-center gap-2 text-[var(--foreground)] cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={exportIncludeVulns}
+                          onChange={(e) => setExportIncludeVulns(e.target.checked)}
+                          className="h-3.5 w-3.5 accent-[var(--accent-primary)]"
+                        />
+                        Include vulnerability report (🔐 Security folder)
+                      </label>
+                      <label className={`flex items-center gap-2 text-[var(--muted)] cursor-pointer ${exportIncludeVulns ? '' : 'opacity-50 pointer-events-none'}`}>
+                        <input
+                          type="checkbox"
+                          checked={exportIncludeVulnGraph}
+                          onChange={(e) => setExportIncludeVulnGraph(e.target.checked)}
+                          className="h-3.5 w-3.5 accent-[var(--accent-primary)]"
+                        />
+                        Include vulnerability graph (Canvas + Mermaid)
+                      </label>
+                    </div>
+                  )}
                   {exportError && (
                     <div className="mt-2 text-xs text-[var(--highlight)]">
                       {exportError}
@@ -2854,7 +3099,30 @@ IMPORTANT:
 
             {/* Wiki Content */}
             <div id="wiki-content" className="wiki-content">
-              {currentPageId && generatedPages[currentPageId] ? (
+              {viewMode === 'security' ? (
+                <div className="w-full p-2">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-xl font-bold text-[var(--foreground)] font-serif">
+                      🔐 Security Analysis
+                    </h3>
+                    <button
+                      onClick={() => setViewMode('wiki')}
+                      className="flex items-center gap-1.5 text-xs font-mono px-2.5 py-1.5 rounded-md border border-[var(--border-color)] text-[var(--muted)] hover:text-[var(--accent-primary)] hover:border-[var(--accent-primary)] transition-colors"
+                    >
+                      <FaBookOpen className="text-xs" />
+                      Back to wiki
+                    </button>
+                  </div>
+                  <VulnSection
+                    report={vulnReport}
+                    status={vulnStatus}
+                    progressMessage={vulnProgressMessage}
+                    progressPercent={vulnProgressPercent}
+                    errorMessage={vulnError || undefined}
+                    onRetry={runVulnScan}
+                  />
+                </div>
+              ) : currentPageId && generatedPages[currentPageId] ? (
                 <div className="w-full">
                   <div className="flex items-start justify-between gap-3 mb-4">
                     <h3 className="text-xl font-bold text-[var(--foreground)] break-words font-serif">

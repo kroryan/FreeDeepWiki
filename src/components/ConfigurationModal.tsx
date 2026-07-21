@@ -56,6 +56,20 @@ interface ConfigurationModalProps {
   onSubmit: () => void;
   isSubmitting: boolean;
 
+  // Vulnerability scan options (🔐 Security Analysis)
+  enableVulnScan: boolean;
+  setEnableVulnScan: (value: boolean) => void;
+  vulnClient: boolean;
+  setVulnClient: (value: boolean) => void;
+  vulnServer: boolean;
+  setVulnServer: (value: boolean) => void;
+  vulnDeps: boolean;
+  setVulnDeps: (value: boolean) => void;
+  nvdKey: string;
+  setNvdKey: (value: string) => void;
+  includeVulnsInObsidian: boolean;
+  setIncludeVulnsInObsidian: (value: boolean) => void;
+
   // Authentication
   authRequired?: boolean;
   authCode?: string;
@@ -96,6 +110,18 @@ export default function ConfigurationModal({
   setIncludedFiles,
   onSubmit,
   isSubmitting,
+  enableVulnScan,
+  setEnableVulnScan,
+  vulnClient,
+  setVulnClient,
+  vulnServer,
+  setVulnServer,
+  vulnDeps,
+  setVulnDeps,
+  nvdKey,
+  setNvdKey,
+  includeVulnsInObsidian,
+  setIncludeVulnsInObsidian,
   authRequired,
   authCode,
   setAuthCode,
@@ -227,6 +253,82 @@ export default function ConfigurationModal({
                 </div>
               </div>
             )}
+
+            {/* 🔐 Security Analysis (CVE vulnerability scan) */}
+            <div className="mb-4 p-4 rounded-md border border-[var(--border-color)] bg-[var(--background)]/40">
+              <label className="flex items-center gap-2 text-sm font-medium text-[var(--foreground)] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={enableVulnScan}
+                  onChange={(e) => setEnableVulnScan(e.target.checked)}
+                  className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)]"
+                />
+                <span className="text-[var(--accent-primary)]">🔐 Security Analysis</span>
+                <span className="text-xs text-[var(--muted)] font-normal">
+                  (scan dependencies for known CVEs via OSV.dev)
+                </span>
+              </label>
+
+              {enableVulnScan && (
+                <div className="mt-3 ml-6 space-y-2">
+                  <p className="text-xs text-[var(--muted)] mb-1">
+                    Categories to include:
+                  </p>
+                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={vulnClient}
+                      onChange={(e) => setVulnClient(e.target.checked)}
+                      className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)]"
+                    />
+                    Client-side vulnerabilities
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={vulnServer}
+                      onChange={(e) => setVulnServer(e.target.checked)}
+                      className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)]"
+                    />
+                    Server-side vulnerabilities
+                  </label>
+                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={vulnDeps}
+                      onChange={(e) => setVulnDeps(e.target.checked)}
+                      className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)]"
+                    />
+                    Dependency vulnerabilities
+                  </label>
+
+                  <div className="pt-2">
+                    <label htmlFor="nvd-key" className="block text-xs font-medium text-[var(--muted)] mb-1">
+                      🔑 Optional NVD API key (free at nvd.nist.gov — adds CVSS scores)
+                    </label>
+                    <input
+                      type="password"
+                      id="nvd-key"
+                      value={nvdKey}
+                      onChange={(e) => setNvdKey(e.target.value)}
+                      className="input-japanese block w-full px-3 py-2 text-sm rounded-md bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                      placeholder="leave empty to use OSV.dev only"
+                      autoComplete="off"
+                    />
+                  </div>
+
+                  <label className="flex items-center gap-2 text-sm text-[var(--foreground)] cursor-pointer pt-1">
+                    <input
+                      type="checkbox"
+                      checked={includeVulnsInObsidian}
+                      onChange={(e) => setIncludeVulnsInObsidian(e.target.checked)}
+                      className="h-4 w-4 rounded border-[var(--border-color)] accent-[var(--accent-primary)]"
+                    />
+                    Include vulnerability report in Obsidian export
+                  </label>
+                </div>
+              )}
+            </div>
           </div>
 
           {/* Modal footer */}
