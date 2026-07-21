@@ -728,6 +728,24 @@ def get_local_file_content(repo_path: str, file_path: str) -> str:
         raise ValueError(f"Error reading file {file_path}: {e}")
 
 
+def _local_clone_dir(repo_url: str, repo_type: str) -> str:
+    """Local clone directory for a github/gitlab/bitbucket repo_url, using
+    the exact same naming convention DatabaseManager._create_repo already
+    uses (~/.adalflow/repos/{owner}_{repo}, or FREEDEEPWIKI_DATA_DIR's
+    equivalent) -- so this resolves to the very clone wiki generation
+    already made, without re-deriving or duplicating that logic elsewhere.
+    """
+    root_path = get_adalflow_default_root_path()
+    url_parts = repo_url.rstrip('/').split('/')
+    if repo_type in ("github", "gitlab", "bitbucket") and len(url_parts) >= 5:
+        owner = url_parts[-2]
+        repo = url_parts[-1].replace(".git", "")
+        repo_name = f"{owner}_{repo}"
+    else:
+        repo_name = url_parts[-1].replace(".git", "")
+    return os.path.join(root_path, "repos", repo_name)
+
+
 def get_file_content(repo_url: str, file_path: str, repo_type: str = None, access_token: str = None) -> str:
     """
     Retrieves the content of a file from a Git repository (GitHub, GitLab,
@@ -746,6 +764,21 @@ def get_file_content(repo_url: str, file_path: str, repo_type: str = None, acces
     Raises:
         ValueError: If the file cannot be fetched or if the URL is not valid
     """
+    if repo_type in ("github", "gitlab", "bitbucket"):
+        # Wiki generation already cloned this repo to disk (DatabaseManager
+        # ._create_repo) -- prefer reading straight from that clone over
+        # the provider's REST API, which is both slower per file and
+        # subject to a low unauthenticated rate limit that a single wiki
+        # page's citations (a dozen-plus files) can trip in one go. Only
+        # fall back to the API if there's no local clone yet, or the file
+        # genuinely isn't in it.
+        local_dir = _local_clone_dir(repo_url, repo_type)
+        if os.path.isdir(local_dir):
+            try:
+                return get_local_file_content(local_dir, file_path)
+            except ValueError:
+                pass
+
     if repo_type == "github":
         return get_github_file_content(repo_url, file_path, access_token)
     elif repo_type == "gitlab":
