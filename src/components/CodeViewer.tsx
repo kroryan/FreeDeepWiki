@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { FaTimes } from 'react-icons/fa';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/cjs/styles/prism';
@@ -30,6 +31,10 @@ export default function CodeViewer({ filePath, repoInfo, onClose }: CodeViewerPr
   const [content, setContent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Portal target must only be touched client-side (no `document` during
+  // SSR) -- this also means the very first client render still matches
+  // the server's (renders null), avoiding a hydration mismatch.
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,7 +82,23 @@ export default function CodeViewer({ filePath, repoInfo, onClose }: CodeViewerPr
     return () => window.removeEventListener('keydown', handler);
   }, [onClose]);
 
-  return (
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  if (!mounted) return null;
+
+  // Rendered via a portal directly into document.body -- not just as a
+  // plain child -- because it's opened from inside the chat widget panel,
+  // which animates open/closed with a CSS transform (scale/translate) and
+  // backdrop-blur. Either one establishes a new containing block for
+  // position: fixed descendants per spec, so without the portal this
+  // panel's "fixed inset-4 sm:inset-8" would size itself against the
+  // chat panel's box instead of the actual viewport -- reported live as
+  // "the code viewer only fills the chat window instead of the screen."
+  // A citation opened from the plain wiki page (no such ancestor) never
+  // had this problem, which is why only the chat path showed it.
+  return createPortal(
     <div
       className="fixed inset-4 sm:inset-8 z-[100] flex flex-col rounded-xl border border-[var(--border-color)] bg-[var(--card-bg)] shadow-[0_8px_40px_rgba(0,0,0,0.35),0_0_0_1px_var(--border-color)] backdrop-blur-xl overflow-hidden"
     >
@@ -124,6 +145,7 @@ export default function CodeViewer({ filePath, repoInfo, onClose }: CodeViewerPr
           </SyntaxHighlighter>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
