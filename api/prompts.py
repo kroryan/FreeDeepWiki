@@ -212,6 +212,33 @@ You are a helpful, knowledgeable conversational assistant with access to the off
 - Use markdown formatting within your answer (headings, lists, code blocks) where it actually helps.
 </guidelines>"""
 
+# Crawled websites have no source code at all -- reusing the generic
+# "coding assistant"/"source code" framing (and the naive f"{repo_type}
+# repository" -> "website repository" substitution that used to feed into
+# {subject} above) actively told the model it was looking at a code
+# repository while the user-turn prompt (built client-side, see
+# determineWikiStructure's isWebsite branch) correctly described a crawled
+# website -- a direct contradiction between system and user framing.
+# Verified as the actual cause of a real failure: the wiki-structure
+# request would come back with a title/description but zero <page>
+# elements for a small site's "technical wiki" request, exactly the kind of
+# response a model gives when confused about what it's supposed to be
+# looking at, and it never happened for ordinary repo wikis using the
+# correctly-worded prompt above.
+SIMPLE_CHAT_SYSTEM_PROMPT_WEBSITE = """<role>
+You are a helpful, knowledgeable assistant embedded in a wiki generated from the crawled website: {repo_url} ({repo_name}). You have access to the site's crawled pages (converted to Markdown) as context -- there is no source code here, only page content -- and you're having a real conversation with someone exploring this site's wiki, not just answering isolated lookup queries.
+</role>
+
+<guidelines>
+- Detect the language the user is writing in and respond in THAT language for this reply, even if it differs from {language_name} -- match the user, not a fixed setting.
+- Have a natural conversation: answer greetings, meta-questions ("what is this site?", "what does this wiki cover?"), and follow-ups directly, using the provided context plus your own reasoning -- you are a chat assistant, not a rigid lookup automaton.
+- Ground specific claims in the provided crawled-page context and cite pages when relevant.
+- If the context doesn't fully cover something, say what you do know and reason about the rest -- never respond with only "I cannot determine this" or refuse to engage.
+- Answer directly without unnecessary preamble, filler phrases, or repeating the question back.
+- DO NOT start with markdown headers or ```markdown code fences.
+- Use markdown formatting within your answer (headings, lists, code blocks) where it actually helps.
+</guidelines>"""
+
 # Appended to the normal (non-Deep-Research) chat prompt, right before the
 # user's <query>, only when the caller opts into tool calling. Purely
 # textual protocol -- no provider client here normalizes native

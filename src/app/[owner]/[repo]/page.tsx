@@ -535,6 +535,11 @@ export default function RepoWikiPage() {
   const [effectiveRepoInfo, setEffectiveRepoInfo] = useState(repoInfo); // Track effective repo info with cached data
   const [embeddingError, setEmbeddingError] = useState(false);
   const [connectionError, setConnectionError] = useState(false);
+  // Set when structure generation fails for a content-quality reason (no
+  // pages returned, idle timeout) rather than the repo/URL being invalid --
+  // the generic "check your repo exists" hint below is actively misleading
+  // for these (the repo/site was already found and read successfully).
+  const [contentGenerationError, setContentGenerationError] = useState(false);
 
   // 🔐 Vulnerability scan state (Security Analysis)
   const [vulnReport, setVulnReport] = useState<VulnReport | null>(null);
@@ -742,9 +747,94 @@ export default function RepoWikiPage() {
         // Get repository URL
         const repoUrl = getRepoUrl(effectiveRepoInfo);
 
-        // Create the prompt content - simplified to avoid message dialogs
- const promptContent =
-`You are an expert technical writer and software architect.
+        // Create the prompt content - simplified to avoid message dialogs.
+        //
+        // 🌐 Websites have their own branch here (not just in
+        // determineWikiStructure): this prompt used to be 100% hardcoded for
+        // code repositories -- "software architect", "[RELEVANT_SOURCE_FILES]"
+        // with a hard "AT LEAST 5 source files" requirement, Mermaid diagrams
+        // for "architectures/data flow/schemas", code snippets in
+        // "Python, Java, JavaScript, SQL", citations demanding "AT LEAST 5
+        // different source files" -- none of which fits a crawled website
+        // page (no source code, and often only 1-3 genuinely relevant
+        // crawled pages, not 5+). That mismatch was confusing enough to
+        // contribute to a real wiki-structure failure for websites (see the
+        // system-prompt fix in api/prompts.py/websocket_wiki.py); this
+        // prompt has the same category of problem for the per-page content
+        // step, so it gets the same treatment.
+        const isWebsitePage = effectiveRepoInfo.type === 'website';
+        const pageLanguageLine = language === 'en' ? 'English' :
+            language === 'ja' ? 'Japanese (日本語)' :
+            language === 'zh' ? 'Mandarin Chinese (中文)' :
+            language === 'zh-tw' ? 'Traditional Chinese (繁體中文)' :
+            language === 'es' ? 'Spanish (Español)' :
+            language === 'kr' ? 'Korean (한국어)' :
+            language === 'vi' ? 'Vietnamese (Tiếng Việt)' :
+            language === "pt-br" ? "Brazilian Portuguese (Português Brasileiro)" :
+            language === "fr" ? "Français (French)" :
+            language === "ru" ? "Русский (Russian)" :
+            'English';
+
+        const promptContent = isWebsitePage ? (technicalAnalysisEnabled ? `You are an expert technical writer analyzing a crawled website.
+Your task is to generate a comprehensive and accurate wiki page in Markdown format about a specific technical aspect (page template, subsystem, navigation pattern, detected technology) of the website's own implementation.
+
+You will be given:
+1. The "[WIKI_PAGE_TOPIC]" for the page you need to create.
+2. A list of "[RELEVANT_PAGES]" -- crawled pages from the site (converted to Markdown) that you should use as the basis for the content. There may be as few as one; use what's provided rather than demanding more.
+
+CRITICAL STARTING INSTRUCTION:
+The very first thing on the page MUST be a \`<details>\` block listing the \`[RELEVANT_PAGES]\` you used. Format it exactly like this:
+<details>
+<summary>Relevant pages</summary>
+
+Remember, do not provide any acknowledgements, disclaimers, apologies, or any other preface before the \`<details>\` block. JUST START with the \`<details>\` block.
+The following pages were used as context for generating this wiki page:
+
+${filePaths.map(path => `- [${path}](${generateFileUrl(path)})`).join('\n')}
+</details>
+
+Immediately after the \`<details>\` block, the main title of the page should be a H1 Markdown heading: \`# ${page.title}\`.
+
+Based ONLY on the content of the \`[RELEVANT_PAGES]\` and what can be observed in them (headers, meta tags, script/link references, page structure):
+
+1.  **Introduction:** Start with a concise introduction (1-2 paragraphs) explaining the purpose and scope of "${page.title}" within this technical analysis of the site.
+2.  **Detailed Sections:** Break down "${page.title}" into logical sections using H2 (\`##\`) and H3 (\`###\`) headings, covering what's actually observable (technology signals, structural patterns, navigation) rather than speculating about server-side implementation you cannot see.
+3.  **Diagrams (optional):** Use a Mermaid \`graph TD\` (top-down, never \`graph LR\`) diagram if it genuinely clarifies a structural or navigation relationship. Quote any label containing punctuation, e.g. A["Blog (WordPress)"].
+4.  **Tables:** Use Markdown tables where they help summarize (e.g. detected technologies, page templates).
+5.  **Citations:** Cite the specific crawled page path(s) each claim is drawn from, e.g. \`Sources: [path/to/page.md]()\`. Cite as many of the provided pages as are actually relevant -- do not pad citations to hit an arbitrary count.
+6.  **Accuracy:** Only state what's actually evidenced in the provided pages. If something can't be determined from crawled HTML/Markdown alone (e.g. backend logic), say so rather than inventing it.
+7.  **Conclusion:** End with a brief summary if appropriate for "${page.title}".
+
+IMPORTANT: Generate the content in ${pageLanguageLine} language.` : `You are an expert wiki writer creating a content wiki about a website's subject matter (not its technical implementation).
+Your task is to generate a comprehensive and accurate wiki page in Markdown format about a specific topic within the site's content, the way the site itself organizes that topic.
+
+You will be given:
+1. The "[WIKI_PAGE_TOPIC]" for the page you need to create.
+2. A list of "[RELEVANT_PAGES]" -- crawled pages from the site (converted to Markdown) that are your sole source material. There may be as few as one; use what's provided rather than demanding more.
+
+CRITICAL STARTING INSTRUCTION:
+The very first thing on the page MUST be a \`<details>\` block listing the \`[RELEVANT_PAGES]\` you used. Format it exactly like this:
+<details>
+<summary>Relevant pages</summary>
+
+Remember, do not provide any acknowledgements, disclaimers, apologies, or any other preface before the \`<details>\` block. JUST START with the \`<details>\` block.
+The following pages were used as context for generating this wiki page:
+
+${filePaths.map(path => `- [${path}](${generateFileUrl(path)})`).join('\n')}
+</details>
+
+Immediately after the \`<details>\` block, the main title of the page should be a H1 Markdown heading: \`# ${page.title}\`.
+
+Based ONLY on the content of the \`[RELEVANT_PAGES]\`:
+
+1.  **Introduction:** Start with a concise introduction (1-2 paragraphs) covering "${page.title}" as the site itself presents it.
+2.  **Detailed Sections:** Break down "${page.title}" into logical sections using H2 (\`##\`) and H3 (\`###\`) headings, organized the way the source pages themselves organize this subject matter.
+3.  **Tables:** Use Markdown tables where they help summarize lists of facts, comparisons, or attributes covered by the source pages.
+4.  **Citations:** Cite the specific crawled page path(s) each claim is drawn from, e.g. \`Sources: [path/to/page.md]()\`. Cite as many of the provided pages as are actually relevant -- do not pad citations to hit an arbitrary count.
+5.  **Accuracy:** Do not invent facts beyond what the source pages state. Do NOT analyze the site's own technical implementation (no HTML/CSS/framework talk) -- write about the subject matter itself.
+6.  **Conclusion:** End with a brief summary if appropriate for "${page.title}".
+
+IMPORTANT: Generate the content in ${pageLanguageLine} language.`) : `You are an expert technical writer and software architect.
 Your task is to generate a comprehensive and accurate technical wiki page in Markdown format about a specific feature, system, or module within a given software project.
 
 You will be given:
@@ -835,17 +925,7 @@ Based ONLY on the content of the \`[RELEVANT_SOURCE_FILES]\`:
 
 9.  **Conclusion/Summary:** End with a brief summary paragraph if appropriate for "${page.title}", reiterating the key aspects covered and their significance within the project.
 
-IMPORTANT: Generate the content in ${language === 'en' ? 'English' :
-            language === 'ja' ? 'Japanese (日本語)' :
-            language === 'zh' ? 'Mandarin Chinese (中文)' :
-            language === 'zh-tw' ? 'Traditional Chinese (繁體中文)' :
-            language === 'es' ? 'Spanish (Español)' :
-            language === 'kr' ? 'Korean (한국어)' :
-            language === 'vi' ? 'Vietnamese (Tiếng Việt)' : 
-            language === "pt-br" ? "Brazilian Portuguese (Português Brasileiro)" :
-            language === "fr" ? "Français (French)" :
-            language === "ru" ? "Русский (Russian)" :
-            'English'} language.
+IMPORTANT: Generate the content in ${pageLanguageLine} language.
 
 Remember:
 - Ground every claim in the provided source files.
@@ -1337,6 +1417,7 @@ IMPORTANT:
             idleTimer = setTimeout(() => {
               console.warn('Wiki structure stream went idle -- no data received for 5 minutes.');
               try { ws.close(); } catch {}
+              setContentGenerationError(true);
               reject(new Error(
                 language === 'es'
                   ? 'El modelo dejó de responder (sin datos nuevos durante 5 minutos). Vuelve a intentar la generación.'
@@ -1573,16 +1654,20 @@ IMPORTANT:
       // elements -- previously this fell through to setting an empty-pages
       // wikiStructure and silently stopping the loading spinner with no
       // pages and no error, which reads as "generation finished" when
-      // nothing was actually generated (seen in practice with the
-      // website/technical-wiki prompt against smaller/cloud models that
-      // sometimes return a <wiki_structure> with a title/description but an
-      // empty <pages> section). Fail loudly and retriably instead, before
-      // any half-built state is committed.
+      // nothing was actually generated. Root cause (websites specifically):
+      // the system prompt told the model it was a "coding assistant"
+      // embedded in a "website repository" with access to "source code" --
+      // a direct contradiction with the user-turn prompt correctly
+      // describing a crawled website with no source code at all. Fixed at
+      // the source in api/prompts.py (SIMPLE_CHAT_SYSTEM_PROMPT_WEBSITE)
+      // and api/websocket_wiki.py. This still fails loudly instead of
+      // silently in case it happens for any other reason.
       if (pages.length === 0) {
+        setContentGenerationError(true);
         throw new Error(
           language === 'es'
-            ? 'El modelo no devolvió ninguna página para esta wiki. Vuelve a intentar la generación (a veces ayuda cambiar de modelo o reducir el número de páginas).'
-            : 'The model did not return any pages for this wiki. Retry the generation (switching models or reducing the page count sometimes helps).'
+            ? 'El modelo no devolvió ninguna página para esta wiki. Vuelve a intentar la generación.'
+            : 'The model did not return any pages for this wiki. Retry the generation.'
         );
       }
 
@@ -1697,6 +1782,7 @@ IMPORTANT:
     setError(null);
     setEmbeddingError(false); // Reset embedding error state
     setConnectionError(false);
+    setContentGenerationError(false);
 
     try {
       // Set the request in progress flag
@@ -2610,6 +2696,7 @@ IMPORTANT:
     setPagesInProgress(new Set());
     setError(null);
     setEmbeddingError(false); // Reset embedding error state
+    setContentGenerationError(false);
     setIsLoading(true); // Set loading state for refresh
     setLoadingMessage(messages.loading?.initializing || 'Initializing wiki generation...');
 
@@ -2820,7 +2907,8 @@ IMPORTANT:
               setGeneratedPages(cachedData.generated_pages);
               setCurrentPageId(cachedStructure.pages.length > 0 ? cachedStructure.pages[0].id : undefined);
               setIsLoading(false);
-              setEmbeddingError(false); 
+              setEmbeddingError(false);
+              setContentGenerationError(false);
               setLoadingMessage(undefined);
               cacheLoadedSuccessfully.current = true;
               return; // Exit if cache is successfully loaded
@@ -2920,6 +3008,7 @@ IMPORTANT:
       cacheLoadedSuccessfully.current = true;
       setError(null);
       setEmbeddingError(false);
+      setContentGenerationError(false);
       setIsLoading(false);
       setLoadingMessage(undefined);
     } catch (err) {
@@ -3311,6 +3400,14 @@ IMPORTANT:
                   : 'The service connection was interrupted during analysis. You can retry without changing the repository URL.'
               ) : embeddingError ? (
                 messages.repoPage?.embeddingErrorDefault || 'This error is related to the document embedding system used for analyzing your repository. Please verify your embedding model configuration, API keys, and try again. If the issue persists, consider switching to a different embedding provider in the model settings.'
+              ) : contentGenerationError ? (
+                // The repo/site itself was already found and read successfully --
+                // this failed at the content-generation step (the model returned
+                // no pages, or stopped responding mid-stream), so the generic
+                // "check your repo exists" hint below would be actively wrong here.
+                language === 'es'
+                  ? 'El repositorio o sitio se leyó correctamente; el problema ocurrió generando el contenido con el modelo de IA. Vuelve a intentarlo -- cambiar de modelo o reducir el número de páginas también puede ayudar.'
+                  : 'The repository or site was read successfully; the problem happened while the AI model was generating content. Retry the generation -- switching models or reducing the page count can also help.'
               ) : (
                 messages.repoPage?.errorMessageDefault || 'Please check that your repository exists and is public. Valid formats are "owner/repo", "https://github.com/owner/repo", "https://gitlab.com/owner/repo", "https://bitbucket.org/owner/repo", or local folder paths like "C:\\path\\to\\folder" or "/path/to/folder".'
               )}

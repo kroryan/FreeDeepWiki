@@ -21,6 +21,7 @@ from api.prompts import (
     DEEP_RESEARCH_FINAL_ITERATION_PROMPT,
     DEEP_RESEARCH_INTERMEDIATE_ITERATION_PROMPT,
     SIMPLE_CHAT_SYSTEM_PROMPT,
+    SIMPLE_CHAT_SYSTEM_PROMPT_WEBSITE,
     SIMPLE_CHAT_SYSTEM_PROMPT_ZIM,
     TOOL_CALLING_INSTRUCTIONS,
     prepend_no_think,
@@ -308,12 +309,25 @@ async def handle_websocket_chat(websocket: WebSocket):
 
         # Determine repository type
         repo_type = request.type
+        is_website = repo_type == "website"
 
-        # Wording used in the system prompt's <role> line below: a .zim is an
-        # offline wiki archive, not a git code repository -- keeping the
-        # "code analyst" framing for it would confuse the model into looking
-        # for source files that don't exist.
-        subject_kind = "offline wiki archive" if is_zim else f"{repo_type} repository"
+        # Wording used in the system prompt's <role> line below (and in the
+        # DEEP_RESEARCH_* prompts' {subject} slot): a .zim is an offline wiki
+        # archive and a crawled website has no source code at all, neither is
+        # a git code repository -- keeping the "code analyst"/"repository"
+        # framing for either confuses the model into looking for source
+        # files that don't exist. Verified as a real cause of failure for
+        # websites specifically: the naive f"{repo_type} repository" made
+        # this read "website repository" -- a self-contradictory phrase that
+        # directly conflicted with the user-turn prompt's correct "crawled
+        # website" framing (see determineWikiStructure's isWebsite branch in
+        # the frontend), and the wiki-structure request would come back with
+        # a title/description but zero <page> elements as a result.
+        subject_kind = (
+            "offline wiki archive" if is_zim
+            else "crawled website" if is_website
+            else f"{repo_type} repository"
+        )
 
         # Get language information
         language_code = request.language or configs["lang_config"]["default"]
@@ -346,7 +360,11 @@ async def handle_websocket_chat(websocket: WebSocket):
                     research_iteration=research_iteration, language_name=language_name
                 )
         else:
-            template = SIMPLE_CHAT_SYSTEM_PROMPT_ZIM if is_zim else SIMPLE_CHAT_SYSTEM_PROMPT
+            template = (
+                SIMPLE_CHAT_SYSTEM_PROMPT_ZIM if is_zim
+                else SIMPLE_CHAT_SYSTEM_PROMPT_WEBSITE if is_website
+                else SIMPLE_CHAT_SYSTEM_PROMPT
+            )
             system_prompt = template.format(
                 subject=subject_kind, repo_url=repo_url, repo_name=repo_name, language_name=language_name
             )
