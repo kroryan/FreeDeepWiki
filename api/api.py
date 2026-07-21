@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import shutil
 import zipfile
 import logging
 from fastapi import FastAPI, HTTPException, Query, WebSocket
@@ -165,6 +166,14 @@ class FileContentRequest(BaseModel):
     repo_url: str = Field(..., description="Repository URL, or local path for type='local'")
     repo_type: str = Field(..., description="Repository type: github, gitlab, bitbucket, or local")
     file_path: str = Field(..., description="Path of the file to read, relative to the repo root")
+    token: Optional[str] = Field(None, description="Personal access token for private repositories")
+
+class RepoStructureRequest(BaseModel):
+    """File tree + README for a github/gitlab/bitbucket repo, read from a
+    local git clone (made fresh if needed) instead of the provider's REST
+    API -- see /api/repo/structure and /ws/repo/clone."""
+    repo_url: str = Field(..., description="Repository URL")
+    repo_type: str = Field(..., description="Repository type: github, gitlab, or bitbucket")
     token: Optional[str] = Field(None, description="Personal access token for private repositories")
 
 # --- Model Configuration Models ---
@@ -689,6 +698,45 @@ def _repo_cache_prefix(repo_type: str, owner: str, repo: str, language: str) -> 
     return f"freedeepwiki_cache_{repo_type}_{owner}_{repo}_{language}"
 
 
+def _repo_has_any_cache(repo_type: str, owner: str, repo: str) -> bool:
+    """Whether any wiki release -- in any language or comprehensive/concise
+    variant -- still exists for this repo. Used to decide whether it's
+    safe to also delete the repo's cloned-to-disk copy and embeddings db:
+    those are shared across every release of a repo (keyed only by
+    owner_repo, not by language/version), so they must only be removed
+    once literally nothing references them anymore.
+    """
+    prefix = f"freedeepwiki_cache_{repo_type}_{owner}_{repo}_"
+    try:
+        return any(
+            filename.startswith(prefix) and filename.endswith(".json")
+            for filename in os.listdir(WIKI_CACHE_DIR)
+        )
+    except OSError:
+        return True  # can't tell -- err on the side of not deleting shared data
+
+
+def _delete_local_repo_clone(repo_type: str, owner: str, repo: str) -> None:
+    """Removes the local git clone and embeddings db for an owner/repo,
+    the same way DatabaseManager._create_repo names them
+    (~/.adalflow/repos/{owner}_{repo}, ~/.adalflow/databases/{owner}_{repo}.pkl,
+    or FREEDEEPWIKI_DATA_DIR's equivalent). Only ever called once
+    _repo_has_any_cache confirms no wiki release still needs them --
+    never for repo_type == 'local', where the "clone" is the user's own
+    folder on disk, not something FreeDeepWiki created.
+    """
+    root_path = get_adalflow_default_root_path()
+    repo_name = f"{owner}_{repo}"
+    clone_dir = os.path.join(root_path, "repos", repo_name)
+    db_file = os.path.join(root_path, "databases", f"{repo_name}.pkl")
+    if os.path.isdir(clone_dir):
+        shutil.rmtree(clone_dir, ignore_errors=True)
+        logger.info(f"Deleted local repo clone: {clone_dir}")
+    if os.path.isfile(db_file):
+        os.remove(db_file)
+        logger.info(f"Deleted embeddings db: {db_file}")
+
+
 def _parse_cache_version(filename: str) -> int:
     """Extract the ``_vN`` release version from a cache filename.
 
@@ -1126,6 +1174,82 @@ async def get_wiki_file_content(request_data: FileContentRequest):
         raise HTTPException(status_code=404, detail=f"Could not read file: {e}")
     return {"file_path": request_data.file_path, "content": content}
 
+@app.post("/api/repo/structure")
+async def get_repo_structure_endpoint(request_data: RepoStructureRequest):
+    """File tree + README for a repo, read from a local clone (made fresh
+    via a normal blocking `git clone` if one doesn't exist yet) instead of
+    the GitHub/GitLab/Bitbucket REST API -- avoids that API's rate limit
+    for the "determine wiki structure" step exactly like /api/wiki/file_content
+    already does for individual source-file citations. HTTP fallback for
+    /ws/repo/clone below when a WebSocket isn't available; blocks for the
+    whole clone instead of streaming progress.
+    """
+    from api.data_pipeline import get_repo_structure as _get_repo_structure
+    try:
+        structure = await asyncio.to_thread(
+            _get_repo_structure, request_data.repo_url, request_data.repo_type, request_data.token
+        )
+    except Exception as e:
+        logger.error(f"Error building repo structure for {request_data.repo_url}: {e}")
+        raise HTTPException(status_code=502, detail=f"Could not read repository structure: {e}")
+    return structure
+
+@app.websocket("/ws/repo/clone")
+async def ws_repo_clone(websocket: WebSocket):
+    """Clones (or reuses an existing local clone of) a github/gitlab/
+    bitbucket repo and streams git's own --progress phases back as they
+    happen, so "open a repo for the first time" shows a real progress bar
+    instead of a silent multi-second hang -- then sends the resulting file
+    tree + README in one final message. See fetchRepoStructureViaBackendClone
+    in src/app/[owner]/[repo]/page.tsx for the client side.
+    """
+    await websocket.accept()
+    try:
+        raw = await websocket.receive_text()
+        payload = json.loads(raw)
+        repo_url = (payload.get("repo_url") or "").strip()
+        repo_type = payload.get("repo_type") or "github"
+        token = payload.get("token") or None
+
+        if not repo_url:
+            await websocket.send_json({"type": "error", "message": "repo_url is required"})
+            return
+
+        from api.data_pipeline import (
+            _local_clone_dir as _get_local_clone_dir,
+            clone_repo_with_progress,
+            _walk_repo_tree,
+            _repo_default_branch,
+        )
+
+        local_dir = _get_local_clone_dir(repo_url, repo_type)
+
+        async def on_progress(evt):
+            await websocket.send_json({"type": "progress", **evt})
+
+        await clone_repo_with_progress(repo_url, local_dir, repo_type, token, on_progress)
+
+        tree, readme_content = await asyncio.to_thread(_walk_repo_tree, local_dir)
+        default_branch = await asyncio.to_thread(_repo_default_branch, local_dir)
+
+        await websocket.send_json({
+            "type": "done",
+            "default_branch": default_branch,
+            "tree": tree,
+            "readme": readme_content,
+        })
+    except Exception as e:
+        logger.error(f"Error in /ws/repo/clone: {e}")
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
 @app.delete("/api/wiki_cache")
 async def delete_wiki_cache(
     owner: str = Query(..., description="Repository owner"),
@@ -1187,6 +1311,15 @@ async def delete_wiki_cache(
         raise HTTPException(status_code=500, detail=f"Failed to delete wiki cache: {str(e)}")
 
     if deleted_paths:
+        # The clone and embeddings db are shared by every release of this
+        # repo (any language, any comprehensive/concise variant) -- only
+        # safe to remove once none of them reference it anymore, and never
+        # for a 'local' repo (that "clone" is the user's own folder).
+        if repo_type in ("github", "gitlab", "bitbucket") and not _repo_has_any_cache(repo_type, owner, repo):
+            try:
+                _delete_local_repo_clone(repo_type, owner, repo)
+            except Exception as e:
+                logger.warning(f"Failed to delete local repo clone for {owner}/{repo}: {e}")
         return {
             "message": (
                 f"Wiki cache for {owner}/{repo} ({language}) deleted successfully"

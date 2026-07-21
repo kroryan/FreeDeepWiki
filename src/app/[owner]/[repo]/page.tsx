@@ -179,6 +179,124 @@ const addTokensToRequestBody = (
   }
 };
 
+export interface CloneProgress {
+  phase: string;
+  percent: number;
+}
+
+interface BackendRepoStructure {
+  fileTreeData: string;
+  readmeContent: string;
+  defaultBranch: string;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function treeToFileList(tree: any[]): string {
+  return tree
+    .filter((item: { type: string; path: string }) => item.type === 'blob')
+    .map((item: { type: string; path: string }) => item.path)
+    .join('\n');
+}
+
+// Structure determination (file tree + README) for a github/gitlab/bitbucket
+// repo, sourced from the backend's own local clone instead of the
+// provider's REST API -- the backend already has (or is about to make)
+// this exact clone for wiki generation itself, so asking the provider API
+// separately just for the tree/README is a redundant network round trip
+// that's also subject to that provider's rate limit. Reports live
+// `git clone --progress` phases via onProgress while it clones (skipped
+// entirely, near-instant, if the repo was already cloned by a previous
+// generation). Falls back to a plain blocking HTTP call if the WebSocket
+// can't be used, and returns null (never throws) if both fail, so the
+// caller can fall back to the original per-provider API logic unchanged.
+async function fetchRepoStructureViaBackendClone(
+  repoUrl: string,
+  repoType: string,
+  token: string,
+  onProgress: (progress: CloneProgress | null) => void
+): Promise<BackendRepoStructure | null> {
+  const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
+
+  try {
+    const result = await new Promise<BackendRepoStructure>((resolve, reject) => {
+      const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws');
+      const ws = new WebSocket(`${wsBaseUrl}/ws/repo/clone`);
+      let settled = false;
+
+      const timeout = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          ws.close();
+          reject(new Error('WebSocket connection timeout'));
+        }
+      }, WEBSOCKET_CONNECT_TIMEOUT_MS);
+
+      ws.onopen = () => {
+        clearTimeout(timeout);
+        ws.send(JSON.stringify({ repo_url: repoUrl, repo_type: repoType, token: token || undefined }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'progress') {
+            onProgress({ phase: msg.phase, percent: msg.percent });
+          } else if (msg.type === 'done') {
+            settled = true;
+            resolve({
+              fileTreeData: treeToFileList(msg.tree || []),
+              readmeContent: msg.readme || '',
+              defaultBranch: msg.default_branch || 'main',
+            });
+            ws.close();
+          } else if (msg.type === 'error') {
+            settled = true;
+            reject(new Error(msg.message || 'Backend repo clone failed'));
+            ws.close();
+          }
+        } catch {
+          // Ignore unparsable frames rather than aborting an otherwise-working clone.
+        }
+      };
+
+      ws.onerror = () => {
+        if (!settled) {
+          settled = true;
+          reject(new Error('WebSocket error during repo clone'));
+        }
+      };
+
+      ws.onclose = () => {
+        if (!settled) {
+          settled = true;
+          reject(new Error('WebSocket closed before repo clone finished'));
+        }
+      };
+    });
+    return result;
+  } catch (wsError) {
+    console.warn('WS repo-clone failed, falling back to HTTP:', wsError);
+    onProgress({ phase: 'Cloning', percent: 0 });
+    try {
+      const response = await fetch(`/api/repo/structure`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo_url: repoUrl, repo_type: repoType, token: token || undefined }),
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      return {
+        fileTreeData: treeToFileList(data.tree || []),
+        readmeContent: data.readme || '',
+        defaultBranch: data.default_branch || 'main',
+      };
+    } catch (httpError) {
+      console.warn('HTTP repo-structure fallback also failed:', httpError);
+      return null;
+    }
+  }
+}
+
 const createGithubHeaders = (githubToken: string): HeadersInit => {
   const headers: HeadersInit = {
     'Accept': 'application/vnd.github.v3+json'
@@ -274,6 +392,10 @@ export default function RepoWikiPage() {
   const [loadingMessage, setLoadingMessage] = useState<string | undefined>(
     messages.loading?.initializing || 'Initializing wiki generation...'
   );
+  // Live progress while the backend clones the repo to disk for the first
+  // time (see fetchRepoStructureViaBackendClone) -- null once cloning
+  // finishes or wasn't needed (repo already cloned by a previous generation).
+  const [cloneProgress, setCloneProgress] = useState<CloneProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wikiStructure, setWikiStructure] = useState<WikiStructure | undefined>();
   const [currentPageId, setCurrentPageId] = useState<string | undefined>();
@@ -1305,7 +1427,44 @@ IMPORTANT:
 
       let fileTreeData = '';
       let readmeContent = '';
+      let structureFetchedViaBackendClone = false;
 
+      // For a hosted repo, prefer the backend's own local clone (it's
+      // about to make -- or already has -- this exact clone for wiki
+      // generation itself) over the provider's REST API, which is both a
+      // redundant network round trip and subject to a rate limit that
+      // repeatedly broke this exact step. Any failure here (WS unusable,
+      // HTTP fallback also down) falls through unchanged to the original
+      // per-provider logic below.
+      if (effectiveRepoInfo.type === 'github' || effectiveRepoInfo.type === 'gitlab' || effectiveRepoInfo.type === 'bitbucket') {
+        setLoadingMessage(messages.loading?.fetchingStructure || 'Fetching repository structure...');
+        try {
+          const cloneResult = await fetchRepoStructureViaBackendClone(
+            getRepoUrl(effectiveRepoInfo),
+            effectiveRepoInfo.type,
+            currentToken,
+            (progress) => {
+              setCloneProgress(progress);
+              if (progress) {
+                setLoadingMessage(`${progress.phase}${progress.percent ? ` ${progress.percent}%` : ''}`);
+              }
+            }
+          );
+          if (cloneResult) {
+            fileTreeData = cloneResult.fileTreeData;
+            readmeContent = cloneResult.readmeContent;
+            setDefaultBranch(cloneResult.defaultBranch);
+            structureFetchedViaBackendClone = true;
+          }
+        } catch (err) {
+          console.warn('Backend repo-clone structure fetch failed, falling back to provider APIs:', err);
+        } finally {
+          setCloneProgress(null);
+          setLoadingMessage(messages.loading?.fetchingStructure || 'Fetching repository structure...');
+        }
+      }
+
+      if (!structureFetchedViaBackendClone) {
       if (effectiveRepoInfo.type === 'local' && effectiveRepoInfo.localPath) {
         try {
           const response = await fetch(`/local_repo/structure?path=${encodeURIComponent(effectiveRepoInfo.localPath)}`);
@@ -1627,6 +1786,7 @@ IMPORTANT:
           console.warn('Could not fetch Bitbucket README.md, continuing with empty README', err);
         }
       }
+      } // end !structureFetchedViaBackendClone
 
       // Now determine the wiki structure
       await determineWikiStructure(fileTreeData, readmeContent, owner, repo);
@@ -2430,6 +2590,23 @@ IMPORTANT:
               {loadingMessage || messages.common?.loading || 'Loading...'}
               {isExporting && (messages.loading?.preparingDownload || ' Please wait while we prepare your download...')}
             </p>
+
+            {/* Progress bar for the initial repo clone/download (only shown
+                for a repo the backend hasn't cloned before -- a refresh of
+                an already-generated repo skips straight past this). */}
+            {cloneProgress && (
+              <div className="w-full max-w-md mt-1 mb-3">
+                <div className="bg-[var(--background)]/50 rounded-full h-2 mb-2 overflow-hidden border border-[var(--border-color)]">
+                  <div
+                    className="bg-[var(--accent-primary)] h-2 rounded-full transition-all duration-300 ease-in-out"
+                    style={{ width: `${Math.max(3, cloneProgress.percent)}%` }}
+                  />
+                </div>
+                <p className="text-xs text-[var(--muted)] text-center">
+                  {cloneProgress.phase} {cloneProgress.percent}%
+                </p>
+              </div>
+            )}
 
             {/* Progress bar for page generation */}
             {wikiStructure && (

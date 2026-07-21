@@ -2,6 +2,8 @@ import adalflow as adal
 from adalflow.core.types import Document, List
 from adalflow.components.data_process import TextSplitter, ToEmbeddings
 import os
+import re
+import asyncio
 import subprocess
 import json
 import tiktoken
@@ -69,6 +71,41 @@ def count_tokens(text: str, embedder_type: str = None, is_ollama_embedder: bool 
         # Rough approximation: 4 characters per token
         return len(text) // 4
 
+def _build_clone_url(repo_url: str, repo_type: str = None, access_token: str = None) -> str:
+    """Embeds an access token into a clone URL using each provider's auth
+    scheme. Shared by download_repo (sync) and clone_repo_with_progress
+    (async) so the two clones never drift out of sync with each other.
+    """
+    if not access_token:
+        return repo_url
+    parsed = urlparse(repo_url)
+    # URL-encode the token to handle special characters
+    encoded_token = quote(access_token, safe='')
+    if repo_type == "github":
+        # Format: https://{token}@{domain}/owner/repo.git
+        # Works for both github.com and enterprise GitHub domains
+        return urlunparse((parsed.scheme, f"{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
+    elif repo_type == "gitlab":
+        # Format: https://oauth2:{token}@gitlab.com/owner/repo.git
+        return urlunparse((parsed.scheme, f"oauth2:{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
+    elif repo_type == "bitbucket":
+        # Bitbucket has two token formats with different auth schemes:
+        #   - HTTP access tokens (prefix "ATCTT") use x-bitbucket-api-token-auth
+        #   - App passwords (deprecated, EOL June 2026) use x-token-auth
+        # Detect by token prefix so existing app password users keep working.
+        auth_scheme = "x-bitbucket-api-token-auth" if access_token.startswith("ATCTT") else "x-token-auth"
+        # Format: https://{auth_scheme}:{token}@bitbucket.org/owner/repo.git
+        return urlunparse((parsed.scheme, f"{auth_scheme}:{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
+    return repo_url
+
+
+def _sanitize_clone_error(error_msg: str, access_token: str = None) -> str:
+    if access_token:
+        error_msg = error_msg.replace(access_token, "***TOKEN***")
+        error_msg = error_msg.replace(quote(access_token, safe=''), "***TOKEN***")
+    return error_msg
+
+
 def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_token: str = None) -> str:
     """
     Downloads a Git repository (GitHub, GitLab, or Bitbucket) to a specified local path.
@@ -101,32 +138,8 @@ def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_
         # Ensure the local path exists
         os.makedirs(local_path, exist_ok=True)
 
-        # Prepare the clone URL with access token if provided
-        clone_url = repo_url
+        clone_url = _build_clone_url(repo_url, repo_type, access_token)
         if access_token:
-            parsed = urlparse(repo_url)
-            # URL-encode the token to handle special characters
-            encoded_token = quote(access_token, safe='')
-            # Determine the repository type and format the URL accordingly
-            if repo_type == "github":
-                # Format: https://{token}@{domain}/owner/repo.git
-                # Works for both github.com and enterprise GitHub domains
-                clone_url = urlunparse((parsed.scheme, f"{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
-            elif repo_type == "gitlab":
-                # Format: https://oauth2:{token}@gitlab.com/owner/repo.git
-                clone_url = urlunparse((parsed.scheme, f"oauth2:{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
-            elif repo_type == "bitbucket":
-                # Bitbucket has two token formats with different auth schemes:
-                #   - HTTP access tokens (prefix "ATCTT") use x-bitbucket-api-token-auth
-                #   - App passwords (deprecated, EOL June 2026) use x-token-auth
-                # Detect by token prefix so existing app password users keep working.
-                if access_token.startswith("ATCTT"):
-                    auth_scheme = "x-bitbucket-api-token-auth"
-                else:
-                    auth_scheme = "x-token-auth"
-                # Format: https://{auth_scheme}:{token}@bitbucket.org/owner/repo.git
-                clone_url = urlunparse((parsed.scheme, f"{auth_scheme}:{encoded_token}@{parsed.netloc}", parsed.path, '', '', ''))
-
             logger.info("Using access token for authentication")
 
         # Clone the repository
@@ -143,20 +156,150 @@ def download_repo(repo_url: str, local_path: str, repo_type: str = None, access_
         return result.stdout.decode("utf-8")
 
     except subprocess.CalledProcessError as e:
-        error_msg = e.stderr.decode('utf-8')
-        # Sanitize error message to remove any tokens (both raw and URL-encoded)
-        if access_token:
-            # Remove raw token
-            error_msg = error_msg.replace(access_token, "***TOKEN***")
-            # Also remove URL-encoded token to prevent leaking encoded version
-            encoded_token = quote(access_token, safe='')
-            error_msg = error_msg.replace(encoded_token, "***TOKEN***")
+        error_msg = _sanitize_clone_error(e.stderr.decode('utf-8'), access_token)
         raise ValueError(f"Error during cloning: {error_msg}")
     except Exception as e:
         raise ValueError(f"An unexpected error occurred: {str(e)}")
 
 # Alias for backward compatibility
 download_github_repo = download_repo
+
+_GIT_PROGRESS_RE = re.compile(r'^(?:remote:\s*)?([A-Za-z][A-Za-z \t]*?):\s*(\d{1,3})%')
+
+
+def _parse_git_progress_line(line: str):
+    """Parses one line of `git clone --progress`'s stderr output, e.g.
+    "Receiving objects:  45% (450/1000), 1.20 MiB | 800.00 KiB/s" or
+    "remote: Counting objects: 100% (500/500), done." into
+    {"phase": "Receiving objects", "percent": 45}. Returns None for lines
+    that carry no percentage (git also prints plain status lines).
+    """
+    line = line.strip()
+    if not line:
+        return None
+    m = _GIT_PROGRESS_RE.match(line)
+    if m:
+        return {"phase": m.group(1).strip(), "percent": min(100, int(m.group(2)))}
+    if line.lower().startswith("cloning into"):
+        return {"phase": "Cloning", "percent": 0}
+    return None
+
+
+async def clone_repo_with_progress(repo_url: str, local_path: str, repo_type: str = None,
+                                    access_token: str = None, on_progress=None) -> None:
+    """Same clone `download_repo` performs, but async and reporting git's
+    own --progress phases (Enumerating/Counting/Compressing/Receiving/
+    Resolving, each 0-100%) via `await on_progress(dict)` as they happen,
+    instead of blocking silently until the whole clone finishes. Used by
+    the /ws/repo/clone endpoint so the UI can show a real progress bar for
+    the one potentially slow step in "open a repo for the first time"
+    instead of a plain spinner.
+    """
+    if os.path.exists(local_path) and os.listdir(local_path):
+        if on_progress:
+            await on_progress({"phase": "Using existing clone", "percent": 100})
+        return
+
+    os.makedirs(local_path, exist_ok=True)
+    clone_url = _build_clone_url(repo_url, repo_type, access_token)
+
+    proc = await asyncio.create_subprocess_exec(
+        "git", "clone", "--progress", "--depth=1", "--single-branch", clone_url, local_path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    buffer = ""
+    stderr_chunks = []
+
+    async def pump_stderr():
+        nonlocal buffer
+        while True:
+            chunk = await proc.stderr.read(256)
+            if not chunk:
+                break
+            stderr_chunks.append(chunk)
+            buffer += chunk.decode("utf-8", errors="replace")
+            while True:
+                cr, nl = buffer.find("\r"), buffer.find("\n")
+                candidates = [i for i in (cr, nl) if i != -1]
+                if not candidates:
+                    break
+                idx = min(candidates)
+                line, buffer = buffer[:idx], buffer[idx + 1:]
+                parsed = _parse_git_progress_line(line)
+                if parsed and on_progress:
+                    await on_progress(parsed)
+
+    async def drain_stdout():
+        while True:
+            chunk = await proc.stdout.read(256)
+            if not chunk:
+                break
+
+    await asyncio.gather(pump_stderr(), drain_stdout())
+    returncode = await proc.wait()
+
+    if returncode != 0:
+        error_msg = _sanitize_clone_error(b"".join(stderr_chunks).decode("utf-8", errors="replace"), access_token)
+        raise ValueError(f"Error during cloning: {error_msg}")
+
+
+_README_PATTERN = re.compile(r'^readme(?:\.[^.]+)?$', re.IGNORECASE)
+
+
+def _walk_repo_tree(local_dir: str):
+    """Builds the same {path, type} tree shape the GitHub/GitLab/Bitbucket
+    APIs return (filtered to files, i.e. type == 'blob') plus the
+    top-level README's content, by walking an already-cloned local
+    directory instead of paginating a provider API.
+    """
+    tree = []
+    readme_content = ""
+    for root, dirs, files in os.walk(local_dir):
+        dirs[:] = [d for d in dirs if d != '.git']
+        rel_dir = os.path.relpath(root, local_dir)
+        for file in files:
+            rel_file = file if rel_dir == '.' else f"{rel_dir}/{file}"
+            rel_file = rel_file.replace(os.sep, '/')
+            tree.append({"path": rel_file, "type": "blob"})
+            if rel_dir == '.' and not readme_content and _README_PATTERN.match(file):
+                try:
+                    with open(os.path.join(root, file), "r", encoding="utf-8", errors="replace") as f:
+                        readme_content = f.read()
+                except OSError:
+                    pass
+    return tree, readme_content
+
+
+def _repo_default_branch(local_dir: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=local_dir, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        return result.stdout.decode("utf-8").strip() or "main"
+    except Exception:
+        return "main"
+
+
+def get_repo_structure(repo_url: str, repo_type: str, access_token: str = None) -> dict:
+    """File tree + default branch + README for a github/gitlab/bitbucket
+    repo, read from the same local clone wiki generation itself uses
+    (cloning it fresh via download_repo if it isn't there yet) instead of
+    the provider's REST API -- the synchronous, no-progress counterpart to
+    clone_repo_with_progress, used as the HTTP fallback when the WS
+    /ws/repo/clone endpoint is unavailable.
+    """
+    local_dir = _local_clone_dir(repo_url, repo_type)
+    if not (os.path.isdir(local_dir) and os.listdir(local_dir)):
+        download_repo(repo_url, local_dir, repo_type, access_token)
+    tree, readme_content = _walk_repo_tree(local_dir)
+    return {
+        "default_branch": _repo_default_branch(local_dir),
+        "tree": tree,
+        "readme": readme_content,
+    }
 
 def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder: bool = None, 
                       excluded_dirs: List[str] = None, excluded_files: List[str] = None,
