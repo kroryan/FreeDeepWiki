@@ -22,7 +22,13 @@ from urllib.parse import urlparse
 import requests
 
 from api.web_crawler.site_store import read_site_meta, website_local_dir
-from api.web_vuln_scanner.checks import check_cookies, check_exposed_paths, check_headers, check_tls
+from api.web_vuln_scanner.checks import (
+    check_cookies,
+    check_exposed_paths,
+    check_headers,
+    check_mixed_content,
+    check_tls,
+)
 from api.web_vuln_scanner.docker_tools import run_docker_toolkit
 from api.web_vuln_scanner.fingerprint import fingerprint_page, js_libs_to_osv_queries, known_server_cves
 from api.web_vuln_scanner.models import SEVERITY_RANKS, WebFinding, WebVulnReport

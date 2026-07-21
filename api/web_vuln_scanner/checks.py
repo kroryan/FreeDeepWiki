@@ -6,6 +6,7 @@ no auth bypass attempts) -- this is a hygiene pass, not a pentest tool.
 from __future__ import annotations
 
 import logging
+import re
 import socket
 import ssl
 from datetime import datetime, timezone
@@ -117,6 +118,68 @@ def check_cookies(url: str, response: requests.Response) -> List[WebFinding]:
                     "cookie theft), and SameSite=Lax/Strict (mitigates CSRF) on all session/auth cookies."
                 ),
             ))
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# Mixed content
+# ---------------------------------------------------------------------------
+
+# "Active" mixed content (scripts, iframes, embeds, stylesheets -- can
+# execute code or rewrite the page) is blocked outright by browsers by
+# default. "Passive" content (images/video/audio -- can still leak
+# information over the unencrypted connection, but can't alter the page)
+# just loses the page's secure/lock indicator instead of being blocked.
+# Regex-based rather than a full HTML parse: this only needs to catch a
+# literal http:// in a handful of specific attribute/tag combinations, and
+# every other check in this module is already string/regex-based to avoid
+# pulling in a full parser dependency for simple pattern matching.
+_MIXED_CONTENT_ACTIVE_RE = re.compile(
+    r'<(?:script|iframe|embed|object)\b[^>]*\bsrc=["\']http://', re.IGNORECASE,
+)
+_MIXED_CONTENT_STYLESHEET_RE = re.compile(
+    r'<link\b(?=[^>]*\brel=["\']stylesheet["\'])[^>]*\bhref=["\']http://', re.IGNORECASE,
+)
+_MIXED_CONTENT_PASSIVE_RE = re.compile(
+    r'<(?:img|video|audio|source)\b[^>]*\bsrc=["\']http://', re.IGNORECASE,
+)
+
+
+def check_mixed_content(url: str, html: str) -> List[WebFinding]:
+    """Flags HTTP sub-resources loaded by an HTTPS page. Only meaningful for
+    HTTPS pages -- a plain HTTP page loading HTTP resources isn't "mixed"."""
+    if not url.lower().startswith("https://"):
+        return []
+    findings: List[WebFinding] = []
+    path = urlparse(url).path or "/"
+    if _MIXED_CONTENT_ACTIVE_RE.search(html) or _MIXED_CONTENT_STYLESHEET_RE.search(html):
+        findings.append(WebFinding(
+            id=f"mixed-content-active-{path}",
+            category=CATEGORY_TLS,
+            severity="HIGH",
+            title="Active mixed content (HTTP scripts/stylesheets on an HTTPS page)",
+            description=(
+                f"{url} is served over HTTPS but loads at least one script, iframe, embed, "
+                f"or stylesheet over plain HTTP. Browsers block this kind of \"active\" mixed "
+                f"content by default, which can silently break page functionality."
+            ),
+            url=url,
+            remediation="Serve all scripts, iframes, embeds, and stylesheets over HTTPS (or protocol-relative/absolute HTTPS URLs).",
+        ))
+    if _MIXED_CONTENT_PASSIVE_RE.search(html):
+        findings.append(WebFinding(
+            id=f"mixed-content-passive-{path}",
+            category=CATEGORY_TLS,
+            severity="LOW",
+            title="Passive mixed content (HTTP images/media on an HTTPS page)",
+            description=(
+                f"{url} is served over HTTPS but loads at least one image, video, or audio "
+                f"resource over plain HTTP. Browsers still load it but drop the page's secure "
+                f"indicator, and the resource itself travels unencrypted."
+            ),
+            url=url,
+            remediation="Serve all images/video/audio over HTTPS.",
+        ))
     return findings
 
 

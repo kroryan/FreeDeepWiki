@@ -397,7 +397,12 @@ export default function ConfigurationModal({
               </div>
             )}
 
-            {/* 🔐 Security Analysis (CVE vulnerability scan) */}
+            {/* 🔐 Security Analysis (CVE dependency vulnerability scan) --
+                only meaningful for a cloned code repo (it scans dependency
+                manifests on disk). Websites get their own always-on
+                "Website Security" scan (headers/cookies/TLS/exposed-paths,
+                plus the optional Docker deep scan above) instead. */}
+            {!isWebsite && (
             <div className="mb-4 p-4 rounded-md border border-[var(--border-color)] bg-[var(--background)]/40">
               <label className="flex items-center gap-2 text-sm font-medium text-[var(--foreground)] cursor-pointer">
                 <input
@@ -462,6 +467,7 @@ export default function ConfigurationModal({
                 </div>
               )}
             </div>
+            )}
           </div>
 
           {/* Modal footer */}
