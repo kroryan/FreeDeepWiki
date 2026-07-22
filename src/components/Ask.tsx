@@ -83,6 +83,11 @@ const Ask: React.FC<AskProps> = ({
   const [response, setResponse] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [deepResearch, setDeepResearch] = useState(false);
+  // 🔐 When on, the latest saved Security Analysis / Website Security scan
+  // report for this repo is summarized and injected into the prompt so the
+  // LLM can answer questions about vulnerabilities directly. Off by default
+  // -- most questions aren't about security, and the report can be sizable.
+  const [includeSecurityContext, setIncludeSecurityContext] = useState(false);
   // Behind-the-scenes events (tool calls, reasoning tokens) for the CURRENT
   // in-flight/most recent answer, extracted from the stream by StreamParser
   // (see src/utils/streamParser.ts) -- shown in a collapsible panel rather
@@ -514,6 +519,9 @@ const Ask: React.FC<AskProps> = ({
         provider: selectedProvider,
         model: isCustomSelectedModel ? customSelectedModel : selectedModel,
         language: language,
+        include_security_context: includeSecurityContext,
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
         ...getSavedApiCredentials(selectedProvider)
       };
 
@@ -792,6 +800,9 @@ const Ask: React.FC<AskProps> = ({
         provider: selectedProvider,
         model: isCustomSelectedModel ? customSelectedModel : selectedModel,
         language: language,
+        include_security_context: includeSecurityContext,
+        owner: repoInfo.owner,
+        repo: repoInfo.repo,
         ...getSavedApiCredentials(selectedProvider)
       };
 
@@ -1011,34 +1022,62 @@ const Ask: React.FC<AskProps> = ({
             </button>
           </div>
 
-          {/* Deep Research toggle */}
-          <div className="flex items-center mt-2 justify-between">
-            <div className="group relative">
-              <label className="flex items-center cursor-pointer">
-                <span className="text-xs text-[var(--muted)] mr-2">Deep Research</span>
-                <div className="relative">
-                  <input
-                    type="checkbox"
-                    checked={deepResearch}
-                    onChange={() => setDeepResearch(!deepResearch)}
-                    className="sr-only"
-                  />
-                  <div className={`w-10 h-5 rounded-full transition-colors ${deepResearch ? 'bg-[var(--accent-primary)]' : 'bg-[var(--muted)]/30'}`}></div>
-                  <div className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform transform ${deepResearch ? 'translate-x-5' : ''}`}></div>
+          {/* Deep Research / Security context toggles */}
+          <div className="flex items-center mt-2 justify-between flex-wrap gap-y-2">
+            <div className="flex items-center gap-4">
+              <div className="group relative">
+                <label className="flex items-center cursor-pointer">
+                  <span className="text-xs text-[var(--muted)] mr-2">Deep Research</span>
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={deepResearch}
+                      onChange={() => setDeepResearch(!deepResearch)}
+                      className="sr-only"
+                    />
+                    <div className={`w-10 h-5 rounded-full transition-colors ${deepResearch ? 'bg-[var(--accent-primary)]' : 'bg-[var(--muted)]/30'}`}></div>
+                    <div className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform transform ${deepResearch ? 'translate-x-5' : ''}`}></div>
+                  </div>
+                </label>
+                <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block bg-[var(--card-bg)] text-[var(--foreground)] border border-[var(--border-color)] text-xs rounded p-2 w-72 z-10 shadow-lg">
+                  <div className="relative">
+                    <div className="absolute -bottom-2 left-4 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-[var(--card-bg)]"></div>
+                    <p className="mb-1">Deep Research conducts a multi-turn investigation process:</p>
+                    <ul className="list-disc pl-4 text-xs">
+                      <li><strong>Initial Research:</strong> Creates a research plan and initial findings</li>
+                      <li><strong>Iteration 1:</strong> Explores specific aspects in depth</li>
+                      <li><strong>Iteration 2:</strong> Investigates remaining questions</li>
+                      <li><strong>Iterations 3-4:</strong> Dives deeper into complex areas</li>
+                      <li><strong>Final Conclusion:</strong> Comprehensive answer based on all iterations</li>
+                    </ul>
+                    <p className="mt-1 text-xs italic">The AI automatically continues research until complete (up to 5 iterations)</p>
+                  </div>
                 </div>
-              </label>
-              <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block bg-[var(--card-bg)] text-[var(--foreground)] border border-[var(--border-color)] text-xs rounded p-2 w-72 z-10 shadow-lg">
-                <div className="relative">
-                  <div className="absolute -bottom-2 left-4 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-[var(--card-bg)]"></div>
-                  <p className="mb-1">Deep Research conducts a multi-turn investigation process:</p>
-                  <ul className="list-disc pl-4 text-xs">
-                    <li><strong>Initial Research:</strong> Creates a research plan and initial findings</li>
-                    <li><strong>Iteration 1:</strong> Explores specific aspects in depth</li>
-                    <li><strong>Iteration 2:</strong> Investigates remaining questions</li>
-                    <li><strong>Iterations 3-4:</strong> Dives deeper into complex areas</li>
-                    <li><strong>Final Conclusion:</strong> Comprehensive answer based on all iterations</li>
-                  </ul>
-                  <p className="mt-1 text-xs italic">The AI automatically continues research until complete (up to 5 iterations)</p>
+              </div>
+
+              <div className="group relative">
+                <label className="flex items-center cursor-pointer">
+                  <span className="text-xs text-[var(--muted)] mr-2">🔐 Security context</span>
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      checked={includeSecurityContext}
+                      onChange={() => setIncludeSecurityContext(!includeSecurityContext)}
+                      className="sr-only"
+                    />
+                    <div className={`w-10 h-5 rounded-full transition-colors ${includeSecurityContext ? 'bg-[var(--accent-primary)]' : 'bg-[var(--muted)]/30'}`}></div>
+                    <div className={`absolute left-0.5 top-0.5 w-4 h-4 rounded-full bg-white transition-transform transform ${includeSecurityContext ? 'translate-x-5' : ''}`}></div>
+                  </div>
+                </label>
+                <div className="absolute bottom-full left-0 mb-2 hidden group-hover:block bg-[var(--card-bg)] text-[var(--foreground)] border border-[var(--border-color)] text-xs rounded p-2 w-72 z-10 shadow-lg">
+                  <div className="relative">
+                    <div className="absolute -bottom-2 left-4 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-[var(--card-bg)]"></div>
+                    <p>
+                      Gives the AI the latest saved Security Analysis (dependency CVEs) and/or Website
+                      Security scan report for this repo, so it can answer questions about vulnerabilities
+                      directly. Never triggers a new scan -- if none has been run yet, this has no effect.
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>

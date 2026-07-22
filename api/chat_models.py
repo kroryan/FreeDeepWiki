@@ -39,6 +39,19 @@ class ChatCompletionRequest(BaseModel):
         True,
         description="Whether the agent may emit SEARCH_WIKI: <query> to fetch more context mid-answer.",
     )
+    # 🔐 Security Analysis / 🌐 Website Security context -- when the user
+    # checks "Include security analysis" in the chat, the latest saved scan
+    # report(s) for this repo are summarized and injected into the prompt so
+    # the LLM can answer questions about vulnerabilities without the user
+    # pasting the report in manually. owner/repo identify which saved report
+    # to load (mirrors the fields the frontend already sends to
+    # /api/vuln_cache and /api/web_vuln_cache).
+    include_security_context: Optional[bool] = Field(
+        False,
+        description="Include the latest saved vulnerability/website-security scan report as chat context.",
+    )
+    owner: Optional[str] = Field(None, description="Repository owner (or 'website' for a crawled site), for security context lookup")
+    repo: Optional[str] = Field(None, description="Repository name (or site hostname for a crawled site), for security context lookup")
 
     # model parameters
     provider: str = Field(

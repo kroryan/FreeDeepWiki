@@ -39,6 +39,11 @@ export interface ChatCompletionRequest {
   excluded_files?: string;
   api_key?: string;
   api_endpoint?: string;
+  // 🔐 When true, the latest saved Security Analysis / Website Security scan
+  // report for owner/repo is summarized and injected into the prompt.
+  include_security_context?: boolean;
+  owner?: string;
+  repo?: string;
 }
 
 /**

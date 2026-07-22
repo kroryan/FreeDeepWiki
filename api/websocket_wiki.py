@@ -416,6 +416,29 @@ async def handle_websocket_chat(websocket: WebSocket):
             logger.info("No context available from RAG")
             context_block += "<note>Answering without retrieval augmentation.</note>\n\n"
 
+        # 🔐 Security Analysis / 🌐 Website Security context -- opt-in via the
+        # chat UI's "Include security analysis" checkbox. Loads the latest
+        # saved scan report(s) for this repo (never triggers a new scan) and
+        # injects a size-capped summary so the LLM can answer questions about
+        # vulnerabilities directly.
+        if request.include_security_context and request.owner and request.repo and not is_zim:
+            try:
+                from api.api import read_vuln_cache, read_web_vuln_cache
+                from api.vuln_common.chat_context import build_security_context_text
+
+                vuln_report = None if is_website else read_vuln_cache(
+                    repo_type, request.owner, request.repo, language_code)
+                web_vuln_report = read_web_vuln_cache(
+                    request.owner, request.repo, language_code) if is_website else None
+
+                security_text = build_security_context_text(vuln_report, web_vuln_report)
+                if security_text:
+                    context_block += f"<security_analysis>\n{security_text}\n</security_analysis>\n\n"
+                else:
+                    logger.info("include_security_context was set but no saved scan report was found")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Failed to load security context for chat: %s", exc)
+
         tool_subject = "ZIM archive" if is_zim else "repository"
 
         # Create the prompt with context. `/no_think` is only meaningful for
