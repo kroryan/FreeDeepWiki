@@ -22,7 +22,7 @@ import { StreamParser } from '@/utils/streamParser';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FaBitbucket, FaBookOpen, FaDownload, FaEdit, FaExclamationTriangle, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHistory, FaHome, FaMagic, FaSave, FaSync, FaTimes, FaTrash } from 'react-icons/fa';
+import { FaBitbucket, FaBookOpen, FaDownload, FaEdit, FaExclamationTriangle, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHistory, FaHome, FaMagic, FaMobileAlt, FaSave, FaSync, FaTimes, FaTrash } from 'react-icons/fa';
 // Define the WikiSection and WikiStructure types directly in this file
 // since the imported types don't have the sections and rootSections properties
 interface WikiSection {
@@ -2797,7 +2797,7 @@ IMPORTANT:
     }
   }, [effectiveRepoInfo.type, loadWebVulnReleases]);
 
-  const exportWiki = useCallback(async (format: 'markdown' | 'json' | 'obsidian') => {
+  const exportWiki = useCallback(async (format: 'markdown' | 'json' | 'obsidian' | 'hdwreader') => {
     if (!wikiStructure || Object.keys(generatedPages).length === 0) {
       setExportError('No wiki content to export');
       return;
@@ -2821,9 +2821,10 @@ IMPORTANT:
       // Get repository URL
       const repoUrl = getRepoUrl(effectiveRepoInfo);
 
-      // Build the export request body. For Obsidian, optionally embed the
-      // vulnerability report (🔐 Security folder) when the user opted in and
-      // a report is available.
+      // Build the export request body. For Obsidian and hdwreader, optionally
+      // embed the vulnerability report(s) when the user opted in and a
+      // report is available. hdwreader also carries the section hierarchy
+      // and generation metadata the other formats don't need.
       const exportBody: Record<string, unknown> = {
         repo_url: repoUrl,
         type: effectiveRepoInfo.type,
@@ -2832,10 +2833,25 @@ IMPORTANT:
         title: wikiStructure.title,
         version: selectedWikiVersion ?? undefined,
       };
-      if (format === 'obsidian' && vulnReport && exportIncludeVulns) {
+      if ((format === 'obsidian' || format === 'hdwreader') && vulnReport && exportIncludeVulns) {
         exportBody.vuln_report = vulnReport;
         exportBody.include_vulns = true;
         exportBody.include_vuln_graph = exportIncludeVulnGraph;
+      }
+      if ((format === 'obsidian' || format === 'hdwreader') && webVulnReport && exportIncludeVulns) {
+        exportBody.web_vuln_report = webVulnReport;
+        exportBody.include_web_vulns = true;
+      }
+      if (format === 'hdwreader') {
+        exportBody.sections = wikiStructure.sections || [];
+        exportBody.root_sections = wikiStructure.rootSections || [];
+        exportBody.description = wikiStructure.description;
+        exportBody.language = language;
+        exportBody.provider = selectedProviderState;
+        exportBody.model = selectedModelState;
+        exportBody.repo_type = effectiveRepoInfo.type;
+        exportBody.owner = effectiveRepoInfo.owner;
+        exportBody.repo = effectiveRepoInfo.repo;
       }
 
       // Make API call to export wiki
@@ -2854,7 +2870,7 @@ IMPORTANT:
 
       // Get the filename from the Content-Disposition header if available
       const contentDisposition = response.headers.get('Content-Disposition');
-      const defaultExt = format === 'markdown' ? 'md' : format === 'obsidian' ? 'zip' : 'json';
+      const defaultExt = format === 'markdown' ? 'md' : format === 'obsidian' ? 'zip' : format === 'hdwreader' ? 'hdwreader' : 'json';
       let filename = `${effectiveRepoInfo.repo}_wiki.${defaultExt}`;
 
       if (contentDisposition) {
@@ -2883,7 +2899,7 @@ IMPORTANT:
       setIsExporting(false);
       setLoadingMessage(undefined);
     }
-  }, [wikiStructure, generatedPages, effectiveRepoInfo, language, selectedWikiVersion, vulnReport, exportIncludeVulns, exportIncludeVulnGraph]);
+  }, [wikiStructure, generatedPages, effectiveRepoInfo, language, selectedWikiVersion, vulnReport, webVulnReport, exportIncludeVulns, exportIncludeVulnGraph, selectedProviderState, selectedModelState]);
 
   // No longer needed as we use the modal directly
 
@@ -3959,7 +3975,16 @@ IMPORTANT:
                       <FaBookOpen className="mr-2" />
                       {messages.repoPage?.exportAsObsidian || 'Export as Obsidian Vault (.zip)'}
                     </button>
-                    {vulnReport && (
+                    <button
+                      onClick={() => exportWiki('hdwreader')}
+                      disabled={isExporting}
+                      title="Download a portable offline bundle (.hdwreader) to read in the HackDeepWikiReader companion app (Android/Linux/Windows)"
+                      className="flex items-center text-xs px-3 py-2 bg-[var(--background)] text-[var(--foreground)] rounded-md hover:bg-[var(--background)]/80 disabled:opacity-50 disabled:cursor-not-allowed border border-[var(--border-color)] transition-colors"
+                    >
+                      <FaMobileAlt className="mr-2" />
+                      Export for HackDeepWikiReader
+                    </button>
+                    {(vulnReport || webVulnReport) && (
                       <div className="mt-1 p-2 rounded-md border border-[var(--border-color)] bg-[var(--background)]/40 text-xs space-y-1.5">
                         <label className="flex items-center gap-2 text-[var(--foreground)] cursor-pointer">
                           <input

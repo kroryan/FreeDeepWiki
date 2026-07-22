@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, HTMLResponse, StreamingResponse
 from typing import List, Optional, Dict, Any, Literal
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 import google.generativeai as genai
 import asyncio
@@ -130,14 +130,29 @@ class WikiExportRequest(BaseModel):
     """
     repo_url: str = Field(..., description="URL of the repository")
     pages: List[WikiPage] = Field(..., description="List of wiki pages to export")
-    format: Literal["markdown", "json", "obsidian"] = Field(..., description="Export format (markdown, json, or obsidian vault zip)")
+    format: Literal["markdown", "json", "obsidian", "hdwreader"] = Field(
+        ..., description="Export format (markdown, json, obsidian vault zip, or hdwreader portable bundle)")
     title: Optional[str] = Field(None, description="Wiki title (used for the Obsidian vault name/index)")
     version: Optional[int] = Field(None, description="Wiki release version being exported (informational)")
     # 🔐 Security Analysis — optional vulnerability report to embed in the
-    # Obsidian vault (ignored for markdown/json exports).
-    vuln_report: Optional[Dict[str, Any]] = Field(None, description="Optional vulnerability report dict to include in the Obsidian vault")
-    include_vulns: bool = Field(False, description="Include the 🔐 Security folder in the Obsidian vault")
-    include_vuln_graph: bool = Field(True, description="Include the vulnerability graph (Canvas + Mermaid) in the Security folder")
+    # Obsidian vault / hdwreader bundle (ignored for markdown/json exports).
+    vuln_report: Optional[Dict[str, Any]] = Field(None, description="Optional vulnerability report dict to include in the export")
+    include_vulns: bool = Field(False, description="Include the dependency vulnerability report in the export")
+    include_vuln_graph: bool = Field(True, description="Include the vulnerability graph (Canvas + Mermaid) in the Security folder (obsidian only)")
+    # 🌐 Website Security — same idea as vuln_report/include_vulns above, but
+    # for the separate website scan report. Only meaningful for website wikis.
+    web_vuln_report: Optional[Dict[str, Any]] = Field(None, description="Optional website security report dict to include in the export")
+    include_web_vulns: bool = Field(False, description="Include the website security report in the export")
+    # 🗂️ hdwreader-only: full page hierarchy, dropped by the other formats.
+    sections: Optional[List[WikiSection]] = Field(None, description="Wiki section tree (hdwreader only)")
+    root_sections: Optional[List[str]] = Field(None, description="Top-level section ids (hdwreader only)")
+    description: Optional[str] = Field(None, description="Wiki description (hdwreader only)")
+    language: Optional[str] = Field(None, description="Wiki language code (hdwreader only)")
+    provider: Optional[str] = Field(None, description="LLM provider used to generate the wiki (hdwreader only)")
+    model: Optional[str] = Field(None, description="LLM model used to generate the wiki (hdwreader only)")
+    repo_type: Optional[str] = Field(None, description="Repository type: github/gitlab/bitbucket/website/local (hdwreader only)")
+    owner: Optional[str] = Field(None, description="Repository owner, or 'website' for a crawled site (hdwreader only)")
+    repo: Optional[str] = Field(None, description="Repository name, or site hostname (hdwreader only)")
 
 class PageEditRequest(BaseModel):
     """Model for saving a manually or AI-edited wiki page's content."""
@@ -455,6 +470,31 @@ async def export_wiki(request: WikiExportRequest):
             version_suffix = f"_v{request.version}" if request.version else ""
             filename = f"{repo_name}_wiki{version_suffix}_{timestamp}_obsidian.zip"
             media_type = "application/zip"
+        elif request.format == "hdwreader":
+            # Portable offline bundle for the HackDeepWikiReader companion
+            # app (Android/Linux/Windows) -- see generate_hdwreader_export.
+            content = generate_hdwreader_export(
+                repo_url=request.repo_url,
+                repo_type=request.repo_type or "github",
+                owner=request.owner or "",
+                repo=request.repo or repo_name,
+                pages=request.pages,
+                sections=request.sections or [],
+                root_sections=request.root_sections or [],
+                title=request.title or f"{repo_name} Wiki",
+                description=request.description or "",
+                language=request.language or "en",
+                provider=request.provider or "",
+                model=request.model or "",
+                version=request.version,
+                vuln_report=request.vuln_report,
+                include_vulns=request.include_vulns,
+                web_vuln_report=request.web_vuln_report,
+                include_web_vulns=request.include_web_vulns,
+            )
+            version_suffix = f"_v{request.version}" if request.version else ""
+            filename = f"{repo_name}_wiki{version_suffix}_{timestamp}.hdwreader"
+            media_type = "application/zip"
         else:  # JSON format
             # Generate JSON content
             content = generate_json_export(request.repo_url, request.pages)
@@ -701,6 +741,87 @@ def generate_obsidian_vault_export(
                 note += "\n## Related\n\n"
                 note += " · ".join(related_links) + "\n"
             zf.writestr(f"{vault_name}/{id_to_name[page.id]}.md", note)
+
+    return buffer.getvalue()
+
+
+HDWREADER_FORMAT_VERSION = 1
+
+
+def generate_hdwreader_export(
+    repo_url: str,
+    repo_type: str,
+    owner: str,
+    repo: str,
+    pages: List[WikiPage],
+    sections: List[WikiSection],
+    root_sections: List[str],
+    title: str,
+    description: str,
+    language: str,
+    provider: str,
+    model: str,
+    version: Optional[int] = None,
+    vuln_report: Optional[Dict[str, Any]] = None,
+    include_vulns: bool = False,
+    web_vuln_report: Optional[Dict[str, Any]] = None,
+    include_web_vulns: bool = False,
+) -> bytes:
+    """Generate a portable offline bundle (.zip, ".hdwreader" extension) for
+    the HackDeepWikiReader companion app (Android/Linux/Windows). Unlike the
+    Obsidian export (human-edited notes with [[wikilinks]]), this is meant to
+    be parsed programmatically, so pages are plain per-id Markdown files and
+    metadata/hierarchy/security reports are plain JSON -- no Markdown
+    frontmatter or wikilink resolution needed on the reading end.
+
+    Layout inside the zip:
+        manifest.json                    -- metadata, section tree, page index
+        pages/<page-id>.md               -- raw page content, one file per page
+        security/vuln_report.json        -- (optional) dependency scan report
+        security/web_vuln_report.json    -- (optional) website scan report
+    """
+    generated_at = datetime.now(timezone.utc).isoformat()
+
+    manifest: Dict[str, Any] = {
+        "format_version": HDWREADER_FORMAT_VERSION,
+        "app": "hackdeepwikireader",
+        "repo_url": repo_url,
+        "repo_type": repo_type,
+        "owner": owner,
+        "repo": repo,
+        "title": title,
+        "description": description,
+        "language": language,
+        "provider": provider,
+        "model": model,
+        "wiki_version": version,
+        "exported_at": generated_at,
+        "sections": [s.model_dump() for s in sections],
+        "root_sections": root_sections,
+        "pages": [
+            {
+                "id": page.id,
+                "title": page.title,
+                "importance": page.importance,
+                "filePaths": page.filePaths,
+                "relatedPages": page.relatedPages,
+                "file": f"pages/{page.id}.md",
+            }
+            for page in pages
+        ],
+        "has_vuln_report": bool(include_vulns and vuln_report),
+        "has_web_vuln_report": bool(include_web_vulns and web_vuln_report),
+    }
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+        for page in pages:
+            zf.writestr(f"pages/{page.id}.md", page.content)
+        if include_vulns and vuln_report:
+            zf.writestr("security/vuln_report.json", json.dumps(vuln_report, indent=2, ensure_ascii=False))
+        if include_web_vulns and web_vuln_report:
+            zf.writestr("security/web_vuln_report.json", json.dumps(web_vuln_report, indent=2, ensure_ascii=False))
 
     return buffer.getvalue()
 
