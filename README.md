@@ -15,6 +15,7 @@
 
 It ships as a **single portable binary** — an AppImage on Linux, a `.exe` on Windows — with no Docker, no database, and no mandatory API key: it works out of the box against a local [Ollama](https://ollama.com) install, and can also talk to OpenAI, Google Gemini, Anthropic Claude, OpenRouter, AWS Bedrock, Azure OpenAI, Alibaba Dashscope, or any OpenAI-compatible endpoint (Novita, Together, Groq, vLLM, LM Studio, and similar).
 
+📱 **[HackDeepWikiReader](https://github.com/kroryan/HackDeepWikiReader)** is the companion read-only client app (Android/Linux/Windows) for browsing wikis and `.zim` archives from any HackDeepWiki server, or offline from an exported `.hdwreader` bundle — full chat parity (pick a provider/model, ask questions, Deep Research, 🔐 security-context) but no generation or scanning.
 
 ## Features
 

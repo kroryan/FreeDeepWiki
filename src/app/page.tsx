@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { FaWikipediaW, FaGithub } from 'react-icons/fa';
+import { FaWikipediaW, FaGithub, FaMobileAlt } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
 import Mermaid from '../components/Mermaid';
 import ConfigurationModal from '@/components/ConfigurationModal';
@@ -919,8 +919,14 @@ export default function Home() {
           <div className="flex items-center gap-6">
             <div className="flex items-center space-x-5">
               <a href="https://github.com/kroryan/HackDeepWiki" target="_blank" rel="noopener noreferrer"
+                title="HackDeepWiki on GitHub"
                 className="text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors">
                 <FaGithub className="text-xl" />
+              </a>
+              <a href="https://github.com/kroryan/HackDeepWikiReader" target="_blank" rel="noopener noreferrer"
+                title="HackDeepWikiReader — companion Android/Linux/Windows reader app"
+                className="text-[var(--muted)] hover:text-[var(--accent-primary)] transition-colors">
+                <FaMobileAlt className="text-xl" />
               </a>
             </div>
             <ThemeToggle />
