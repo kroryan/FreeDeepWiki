@@ -1807,6 +1807,8 @@ async def ws_vuln_scan(websocket: WebSocket):
         local_path = (payload.get("local_path") or "").strip()
         owner = payload.get("owner") or ""
         repo = payload.get("repo") or ""
+        token = payload.get("token") or None
+        force = bool(payload.get("force", False))
         nvd_key = payload.get("nvd_key") or None
         enable_client = bool(payload.get("enable_client", True))
         enable_server = bool(payload.get("enable_server", True))
@@ -1824,8 +1826,25 @@ async def ws_vuln_scan(websocket: WebSocket):
         if repo_type == "local":
             repo_dir = local_path or repo_url
         else:
-            from api.data_pipeline import _local_clone_dir as _get_local_clone_dir
+            from api.data_pipeline import _local_clone_dir as _get_local_clone_dir, clone_repo_with_progress
             repo_dir = _get_local_clone_dir(repo_url, repo_type)
+            # "Rescan" (force=True, set by the manual rerun button -- see
+            # RescanConfigModal's onSubmit in page.tsx) must reflect the
+            # repo's *current* remote state, not whatever happened to be
+            # cloned whenever the wiki was last generated. Without this, a
+            # manual rescan silently re-scanned a stale clone and always
+            # reproduced the exact same findings even after new commits
+            # landed upstream -- indistinguishable from "the rescan did
+            # nothing." The automatic scan that fires right after wiki
+            # generation/refresh doesn't set force: that clone is already
+            # as fresh as this request can make it.
+            if force and repo_url:
+                await websocket.send_json(
+                    {"type": "progress", "message": "Refreshing repository clone…", "percent": 0})
+                try:
+                    await clone_repo_with_progress(repo_url, repo_dir, repo_type, token, None, force=True)
+                except Exception as exc:
+                    logger.warning("Force re-clone before vuln scan failed (scanning existing clone instead): %s", exc)
 
         if not repo_dir or not os.path.isdir(repo_dir):
             await websocket.send_json({"type": "error",

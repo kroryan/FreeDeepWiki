@@ -2491,6 +2491,18 @@ IMPORTANT:
       api_key: creds.api_key || undefined,
       api_endpoint: creds.api_endpoint || undefined,
       local_path: effectiveRepoInfo.localPath || undefined,
+      token: currentToken || undefined,
+      // A rescan must reflect the repo's current remote state, not whatever
+      // was cloned whenever the wiki was last generated -- without this,
+      // re-scanning a repo that got new commits upstream silently kept
+      // re-scanning the old clone and reproduced identical findings every
+      // time. `overrides` is set both for a manual rerun (RescanConfigModal)
+      // and for the auto-trigger right after wiki generation/refresh (which
+      // now passes `{}` explicitly instead of calling with no args) -- see
+      // both call sites of runVulnScan for why forcing here is safe even
+      // when it's technically redundant (a repo that was just cloned/
+      // re-cloned moments ago).
+      force: overrides !== undefined,
       nvd_key: (overrides?.nvdKey ?? nvdKeyParam) || undefined,
       enable_client: overrides?.vulnClient ?? vulnClientEnabled,
       enable_server: overrides?.vulnServer ?? vulnServerEnabled,
@@ -2587,7 +2599,7 @@ IMPORTANT:
     }
   }, [repoUrl, repoType, effectiveRepoInfo, language, selectedProviderState, selectedModelState,
       nvdKeyParam, vulnClientEnabled, vulnServerEnabled, vulnDepsEnabled,
-      modelExcludedDirs, modelExcludedFiles, loadVulnReleases]);
+      modelExcludedDirs, modelExcludedFiles, loadVulnReleases, currentToken]);
 
   // Load a previously-saved vuln report (if any) so the Security tab is
   // populated when opening an already-scanned repo, without re-scanning.
@@ -3528,7 +3540,18 @@ IMPORTANT:
               // wiping out a perfectly good cached scan the user had just
               // gotten back, which read as "scans aren't persistent."
               if (vulnScanRequested && !vulnReport) {
-                try { runVulnScanRef.current?.(); } catch (e) { console.warn('vuln scan trigger failed', e); }
+                // Passing {} (not calling with no args) makes runVulnScan see
+                // `overrides !== undefined` and force a fresh re-clone before
+                // scanning. It's provably redundant right here -- the clone
+                // this reads was just made (first generation) or just forced
+                // fresh by handleRefresh (see fetchRepositoryStructure's
+                // `force` chain) -- but making it explicit here removes the
+                // dependency on that ordering holding forever as this file
+                // keeps changing, for the cost of one extra cheap shallow
+                // clone. This is exactly the path that silently re-scanned a
+                // stale clone and reproduced identical findings after a
+                // "Refresh Wiki" before that chain was force-aware.
+                try { runVulnScanRef.current?.({}); } catch (e) { console.warn('vuln scan trigger failed', e); }
               }
               // 🌐 For website wikis, run the (separate) website security
               // scan once the site is crawled and the wiki is generated --
