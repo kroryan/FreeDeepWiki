@@ -475,7 +475,12 @@ def import_dump(
                 content_type="text/html",
             )
             relpath = page_to_relpath(crawl_page)
-            images_relprefix = "../" * relpath.count("/")
+            # Images live in the source tree's shared ``_images`` folder.
+            # Keep the folder component in the Markdown URL: the old code
+            # copied there but emitted ``../filename.png``, so imports could
+            # report a successful image match while the reader displayed a
+            # broken image.
+            images_relprefix = ("../" * relpath.count("/")) + "_images/"
 
             markdown, categories, images_used = wikitext_to_markdown(
                 wikitext, image_index=image_index, images_relprefix=images_relprefix,
@@ -812,7 +817,9 @@ def attach_images(
             if "imagen no disponible" not in content:
                 continue
 
-            images_relprefix = "../" * own_relpath.count("/")
+            # Mirror import_dump: attached media is copied into the shared
+            # root-level ``_images`` folder, not next to each article.
+            images_relprefix = ("../" * own_relpath.count("/")) + "_images/"
 
             def _resolve(m: "re.Match") -> str:
                 nonlocal attached, still_missing

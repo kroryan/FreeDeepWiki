@@ -2,12 +2,14 @@ import os
 import re
 import io
 import shutil
+import tempfile
 import zipfile
 import logging
 import mimetypes
 from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, HTMLResponse, StreamingResponse
+from starlette.background import BackgroundTask
 from typing import List, Optional, Dict, Any, Literal
 import json
 from datetime import datetime, timezone
@@ -2055,6 +2057,8 @@ async def fanwiki_repair_links(request: FanwikiRepairLinksRequest):
     from api.web_crawler.site_store import website_local_dir
     from api.fanwiki_import import repair_internal_links
 
+    if fanwiki_library.get_by_start_url(request.start_url) is None:
+        raise HTTPException(status_code=404, detail="Imported fanwiki source not found")
     local_dir = website_local_dir(request.start_url)
     if not os.path.isdir(local_dir):
         raise HTTPException(status_code=404, detail=f"No imported fanwiki found for {request.start_url}")
@@ -2085,6 +2089,8 @@ async def fanwiki_attach_images(request: FanwikiAttachImagesRequest):
     from api.web_crawler.site_store import website_local_dir
     from api.fanwiki_import import attach_images
 
+    if fanwiki_library.get_by_start_url(request.start_url) is None:
+        raise HTTPException(status_code=404, detail="Imported fanwiki source not found")
     local_dir = website_local_dir(request.start_url)
     if not os.path.isdir(local_dir):
         raise HTTPException(status_code=404, detail=f"No imported fanwiki found for {request.start_url}")
@@ -2161,6 +2167,66 @@ async def get_fanwiki_asset(fanwiki_id: str, path: str = Query(..., min_length=1
         asset_path,
         media_type=media_type,
         headers={"X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get("/api/fanwiki/{fanwiki_id}/export/{export_format}")
+async def export_imported_fanwiki(fanwiki_id: str, export_format: str):
+    """Download a complete XML import without requiring LLM generation.
+
+    FileResponse streams a temporary archive instead of duplicating a large
+    wiki in memory. The archive is removed after the response completes.
+    """
+    entry = _get_fanwiki_entry_or_404(fanwiki_id)
+    if export_format not in {"obsidian", "hdwreader"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported export format. Use obsidian or hdwreader.",
+        )
+
+    suffix = ".zip" if export_format == "obsidian" else ".hdwreader"
+    fd, archive_path = tempfile.mkstemp(prefix="hackdeepwiki-export-", suffix=suffix)
+    os.close(fd)
+    try:
+        exporter = (
+            fanwiki_library.export_obsidian
+            if export_format == "obsidian"
+            else fanwiki_library.export_hdwreader
+        )
+        result = await asyncio.to_thread(exporter, fanwiki_id, archive_path)
+    except (KeyError, FileNotFoundError):
+        try:
+            os.unlink(archive_path)
+        except FileNotFoundError:
+            pass
+        raise HTTPException(status_code=404, detail="Imported fanwiki source is incomplete")
+    except Exception as exc:
+        try:
+            os.unlink(archive_path)
+        except FileNotFoundError:
+            pass
+        logger.exception(
+            "Failed to export imported fanwiki %s as %s", fanwiki_id, export_format
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    safe_name = re.sub(
+        r"[^A-Za-z0-9._-]+", "_", str(entry.get("repo") or "fanwiki")
+    ).strip("._")
+    filename = (
+        f"{safe_name or 'fanwiki'}_obsidian.zip"
+        if export_format == "obsidian"
+        else f"{safe_name or 'fanwiki'}.hdwreader"
+    )
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=filename,
+        headers={
+            "X-HackDeepWiki-Page-Count": str(result["page_count"]),
+            "X-HackDeepWiki-Asset-Count": str(result["asset_count"]),
+        },
+        background=BackgroundTask(os.unlink, archive_path),
     )
 
 

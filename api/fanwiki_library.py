@@ -9,10 +9,13 @@ sync with the Markdown tree on disk.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import posixpath
 import re
 import shutil
-from datetime import datetime
+import zipfile
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -211,7 +214,12 @@ def _reader_markdown(content: str) -> str:
         if stripped.startswith("{|") or stripped == "|}" or stripped.startswith("|-"):
             continue
         line = raw_line
-        if stripped.startswith(("|", "!")):
+        # A MediaWiki table header starts with ``!``, but a valid Markdown
+        # image starts with ``![``. Treating both alike silently converted
+        # every imported image embed into a normal text link in the reader.
+        if stripped.startswith("|") or (
+            stripped.startswith("!") and not stripped.startswith("![")
+        ):
             cell = stripped[1:].strip()
             if not cell:
                 continue
@@ -265,13 +273,10 @@ def read_page(entry_id: str, relpath: str) -> Dict:
     )
     if page is None:
         raise FileNotFoundError(relpath)
-    full_path = os.path.join(local_dir, relpath.replace("/", os.sep))
-    with open(full_path, "r", encoding="utf-8") as handle:
-        content = handle.read()
+    content = _read_page_body(local_dir, relpath)
     # The source files use the crawler's small YAML header. It is useful to
     # RAG/indexing, but it should not appear as a horizontal-rule block in the
     # reader itself.
-    content = re.sub(r"\A---\r?\n.*?\r?\n---\r?\n+", "", content, count=1, flags=re.DOTALL)
     content = _reader_markdown(content)
     return {
         "path": relpath,
@@ -279,6 +284,214 @@ def read_page(entry_id: str, relpath: str) -> Dict:
         "url": str(page.get("url") or ""),
         "categories": list(page.get("categories") or []),
         "content": content,
+    }
+
+
+def _safe_source_path(local_dir: str, relpath: str) -> str:
+    """Resolve a manifest path without allowing archive/path traversal."""
+    base = os.path.realpath(local_dir)
+    candidate = os.path.realpath(os.path.join(base, relpath.replace("/", os.sep)))
+    if os.path.commonpath((base, candidate)) != base or not os.path.isfile(candidate):
+        raise FileNotFoundError(relpath)
+    return candidate
+
+
+def _read_page_body(local_dir: str, relpath: str) -> str:
+    with open(_safe_source_path(local_dir, relpath), "r", encoding="utf-8") as handle:
+        content = handle.read()
+    return re.sub(
+        r"\A---\r?\n.*?\r?\n---\r?\n+",
+        "",
+        content,
+        count=1,
+        flags=re.DOTALL,
+    )
+
+
+def _safe_archive_name(value: str) -> str:
+    value = re.sub(r'[*"\\/<>:|?]', "-", value)
+    value = re.sub(r"[\x00-\x1f]", "", value)
+    value = re.sub(r"-{2,}", "-", value).strip().rstrip(".-").strip()
+    return value or "Imported Wiki"
+
+
+def _manifest_pages(meta: Dict) -> List[Dict]:
+    return [
+        page
+        for page in (meta.get("pages") or [])
+        if isinstance(page, dict) and str(page.get("relpath") or "").endswith(".md")
+    ]
+
+
+def _write_shared_assets(
+    zf: zipfile.ZipFile,
+    local_dir: str,
+    archive_prefix: str,
+) -> List[str]:
+    """Copy only the importer's managed media directory into an export."""
+    assets_dir = os.path.join(local_dir, "_images")
+    if not os.path.isdir(assets_dir):
+        return []
+    exported: List[str] = []
+    for root, dirs, files in os.walk(assets_dir, followlinks=False):
+        dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(root, name))]
+        for filename in files:
+            source = os.path.join(root, filename)
+            if os.path.islink(source) or not os.path.isfile(source):
+                continue
+            relative = os.path.relpath(source, assets_dir).replace(os.sep, "/")
+            archive_path = posixpath.join(archive_prefix, relative)
+            zf.write(source, archive_path)
+            exported.append(relative)
+    return exported
+
+
+def export_obsidian(entry_id: str, output_path: str) -> Dict:
+    """Write the complete imported source as a directly usable Obsidian vault.
+
+    Article paths are preserved, so repaired relative links keep working.
+    Managed images are included under ``_images`` with the same relationship
+    to article files as in the in-app reader.
+    """
+    source = _find(entry_id)
+    if source is None:
+        raise KeyError(entry_id)
+    local_dir, meta = source
+    entry = _entry_from_manifest(local_dir, meta)
+    pages = _manifest_pages(meta)
+    vault_name = _safe_archive_name(entry["name"])
+
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        zf.writestr(f"{vault_name}/.obsidian/app.json", json.dumps({}, indent=2))
+        home = [
+            f"# {entry['name']}",
+            "",
+            "Bóveda exportada desde un XML de MediaWiki con HackDeepWiki.",
+            "",
+            f"- Fuente: {entry['start_url']}",
+            f"- Artículos: {len(pages)}",
+            f"- Exportada: {datetime.now(timezone.utc).isoformat()}",
+            "",
+            "## Artículos",
+            "",
+        ]
+        for page in pages:
+            relpath = str(page["relpath"])
+            note_target = relpath[:-3].replace("\\", "/")
+            title = str(page.get("title") or relpath).replace("|", "–")
+            home.append(f"- [[{note_target}|{title}]]")
+            body = _reader_markdown(_read_page_body(local_dir, relpath))
+            zf.writestr(f"{vault_name}/{relpath}", body)
+        zf.writestr(f"{vault_name}/Home.md", "\n".join(home) + "\n")
+        assets = _write_shared_assets(zf, local_dir, f"{vault_name}/_images")
+
+    return {
+        "format": "obsidian",
+        "page_count": len(pages),
+        "asset_count": len(assets),
+        "title": entry["name"],
+    }
+
+
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+_MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
+
+
+def _resolve_markdown_target(source_relpath: str, href: str) -> Tuple[Optional[str], str]:
+    href = href.strip()
+    if not href or href.startswith("#") or re.match(r"^(?:[a-z][a-z0-9+.-]*:|//)", href, re.I):
+        return None, ""
+    path_and_query, separator, fragment = href.partition("#")
+    path_only = path_and_query.split("?", 1)[0]
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(source_relpath), path_only))
+    return resolved, f"{separator}{fragment}" if separator else ""
+
+
+def export_hdwreader(entry_id: str, output_path: str) -> Dict:
+    """Write a format-v1 HackDeepWikiReader bundle for an imported wiki."""
+    source = _find(entry_id)
+    if source is None:
+        raise KeyError(entry_id)
+    local_dir, meta = source
+    entry = _entry_from_manifest(local_dir, meta)
+    pages = _manifest_pages(meta)
+    path_to_id = {
+        str(page["relpath"]): f"page-{hashlib.sha256(str(page['relpath']).encode('utf-8')).hexdigest()[:20]}"
+        for page in pages
+    }
+    manifest_pages: List[Dict] = []
+    rendered_pages: List[Tuple[str, str]] = []
+
+    for page in pages:
+        relpath = str(page["relpath"])
+        page_id = path_to_id[relpath]
+        related: List[str] = []
+        body = _reader_markdown(_read_page_body(local_dir, relpath))
+
+        def replace_image(match: re.Match) -> str:
+            target, fragment = _resolve_markdown_target(relpath, match.group(2))
+            if target and target.startswith("_images/"):
+                return f"![{match.group(1)}](../assets/{target[len('_images/'):]}{fragment})"
+            return match.group(0)
+
+        def replace_link(match: re.Match) -> str:
+            target, fragment = _resolve_markdown_target(relpath, match.group(2))
+            target_id = path_to_id.get(target or "")
+            if not target_id:
+                return match.group(0)
+            if target_id not in related:
+                related.append(target_id)
+            return f"[{match.group(1)}]({target_id}.md{fragment})"
+
+        body = _MARKDOWN_IMAGE_RE.sub(replace_image, body)
+        body = _MARKDOWN_LINK_RE.sub(replace_link, body)
+        rendered_pages.append((page_id, body))
+        manifest_pages.append({
+            "id": page_id,
+            "title": str(page.get("title") or relpath),
+            "importance": "medium",
+            "filePaths": [relpath],
+            "relatedPages": related,
+            "file": f"pages/{page_id}.md",
+            "source_url": str(page.get("url") or ""),
+            "categories": list(page.get("categories") or []),
+        })
+
+    exported_at = datetime.now(timezone.utc).isoformat()
+    manifest: Dict = {
+        "format_version": 1,
+        "app": "hackdeepwikireader",
+        "repo_url": entry["start_url"],
+        "repo_type": "fanwiki",
+        "owner": entry["owner"],
+        "repo": entry["repo"],
+        "title": entry["name"],
+        "description": f"Imported MediaWiki XML source for {entry['name']}",
+        "language": str(meta.get("language") or ""),
+        "provider": "",
+        "model": "",
+        "wiki_version": None,
+        "exported_at": exported_at,
+        "sections": [],
+        "root_sections": [],
+        "pages": manifest_pages,
+        "has_vuln_report": False,
+        "has_web_vuln_report": False,
+        "source_type": "mediawiki_xml",
+    }
+
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+        for page_id, body in rendered_pages:
+            zf.writestr(f"pages/{page_id}.md", body)
+        assets = _write_shared_assets(zf, local_dir, "assets")
+        manifest["assets"] = [f"assets/{path}" for path in assets]
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False))
+
+    return {
+        "format": "hdwreader",
+        "page_count": len(pages),
+        "asset_count": len(assets),
+        "title": entry["name"],
     }
 
 

@@ -1,6 +1,7 @@
 'use client';
 
 import ChatWidget from '@/components/ChatWidget';
+import FileBrowserModal from '@/components/FileBrowserModal';
 import Markdown from '@/components/Markdown';
 import ThemeToggle from '@/components/theme-toggle';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -8,7 +9,15 @@ import RepoInfo from '@/types/repoinfo';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { FaExternalLinkAlt, FaHome, FaMagic, FaSearch } from 'react-icons/fa';
+import {
+  FaBookOpen,
+  FaExternalLinkAlt,
+  FaFolderOpen,
+  FaHome,
+  FaLink,
+  FaMobileAlt,
+  FaSearch,
+} from 'react-icons/fa';
 
 interface FanwikiMetadata {
   id: string;
@@ -86,6 +95,13 @@ export default function FanwikiReaderPage() {
   const [currentPage, setCurrentPage] = useState<FanwikiPage | null>(null);
   const [isPageLoading, setIsPageLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pageRevision, setPageRevision] = useState(0);
+  const [toolRunning, setToolRunning] = useState<'repair' | 'attach' | null>(null);
+  const [toolMessage, setToolMessage] = useState<string | null>(null);
+  const [toolError, setToolError] = useState<string | null>(null);
+  const [isAttachModalOpen, setIsAttachModalOpen] = useState(false);
+  const [isImagesBrowserOpen, setIsImagesBrowserOpen] = useState(false);
+  const [imagesDir, setImagesDir] = useState('');
 
   const repoInfo: RepoInfo | null = useMemo(() => {
     if (!metadata) return null;
@@ -156,7 +172,7 @@ export default function FanwikiReaderPage() {
         setError(reason instanceof Error ? reason.message : 'No se pudo cargar el artículo.');
       })
       .finally(() => setIsPageLoading(false));
-  }, [fanwikiId, currentPath]);
+  }, [fanwikiId, currentPath, pageRevision]);
 
   useEffect(() => {
     const normalized = query.trim();
@@ -199,6 +215,71 @@ export default function FanwikiReaderPage() {
       : src;
   }, [currentPath, fanwikiId]);
 
+  const repairLinks = useCallback(async () => {
+    if (!metadata || toolRunning) return;
+    setToolRunning('repair');
+    setToolError(null);
+    setToolMessage(null);
+    try {
+      const response = await fetch('/api/fanwiki/repair_links', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start_url: metadata.start_url }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.detail || body.error || 'No se pudieron reparar los enlaces.');
+      }
+      setToolMessage(
+        `Enlaces revisados: ${Number(body.files_scanned || 0).toLocaleString()} archivos con marcadores, ` +
+        `${Number(body.links_resolved || 0).toLocaleString()} resueltos y ` +
+        `${Number(body.links_unresolved || 0).toLocaleString()} sin destino importado.`,
+      );
+      setPageRevision((value) => value + 1);
+    } catch (reason) {
+      setToolError(reason instanceof Error ? reason.message : 'No se pudieron reparar los enlaces.');
+    } finally {
+      setToolRunning(null);
+    }
+  }, [metadata, toolRunning]);
+
+  const attachImages = useCallback(async () => {
+    if (!metadata || toolRunning) return;
+    const selectedDir = imagesDir.trim();
+    if (!selectedDir) {
+      setToolError('Selecciona primero una carpeta de imágenes.');
+      return;
+    }
+    setToolRunning('attach');
+    setToolError(null);
+    setToolMessage(null);
+    try {
+      const response = await fetch('/api/fanwiki/attach_images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          start_url: metadata.start_url,
+          images_dir: selectedDir,
+        }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(body.detail || body.error || 'No se pudieron añadir las imágenes.');
+      }
+      setToolMessage(
+        `Imágenes revisadas: ${Number(body.files_scanned || 0).toLocaleString()} páginas, ` +
+        `${Number(body.images_attached || 0).toLocaleString()} añadidas y ` +
+        `${Number(body.images_still_missing || 0).toLocaleString()} aún no encontradas.`,
+      );
+      setIsAttachModalOpen(false);
+      setPageRevision((value) => value + 1);
+    } catch (reason) {
+      setToolError(reason instanceof Error ? reason.message : 'No se pudieron añadir las imágenes.');
+    } finally {
+      setToolRunning(null);
+    }
+  }, [imagesDir, metadata, toolRunning]);
+
   const visibleEntries = query ? results : indexEntries;
 
   return (
@@ -223,23 +304,77 @@ export default function FanwikiReaderPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {metadata && (
-            <Link
-              href={`/?resume_fanwiki=${encodeURIComponent(metadata.start_url)}`}
-              className="hidden sm:flex items-center gap-2 px-3 py-2 text-xs rounded-md border border-[var(--accent-primary)]/40 text-[var(--accent-primary)] hover:bg-[var(--accent-primary)]/10 transition-colors"
-              title="Crear una wiki resumida y estructurada mediante el LLM"
-            >
-              <FaMagic />
-              Generar con IA
-            </Link>
-          )}
           <ThemeToggle />
         </div>
       </header>
 
+      {metadata && (
+        <div
+          className="border-b border-[var(--border-color)] px-3 py-2 flex flex-wrap items-center gap-2 shrink-0 bg-[var(--card-bg)]/40"
+          aria-label="Herramientas de la wiki importada"
+          data-testid="fanwiki-tools"
+        >
+          <button
+            type="button"
+            onClick={() => {
+              setToolError(null);
+              setIsAttachModalOpen(true);
+            }}
+            disabled={toolRunning !== null}
+            className="flex items-center gap-2 px-3 py-2 text-xs rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)] disabled:opacity-50 transition-colors"
+            data-testid="fanwiki-attach-images"
+          >
+            <FaFolderOpen />
+            Añadir carpeta de imágenes
+          </button>
+          <button
+            type="button"
+            onClick={repairLinks}
+            disabled={toolRunning !== null}
+            className="flex items-center gap-2 px-3 py-2 text-xs rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)] disabled:opacity-50 transition-colors"
+            title="La importación hace una primera reparación automáticamente; esta acción vuelve a comprobarla después de cambios o importaciones parciales."
+            data-testid="fanwiki-repair-links"
+          >
+            <FaLink />
+            {toolRunning === 'repair' ? 'Reparando…' : 'Reparar enlaces internos'}
+          </button>
+          <a
+            href={`/api/fanwiki/${encodeURIComponent(fanwikiId)}/export/obsidian`}
+            className="flex items-center gap-2 px-3 py-2 text-xs rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)] transition-colors"
+            title="Descargar todos los artículos e imágenes como una bóveda Obsidian"
+            data-testid="fanwiki-export-obsidian"
+          >
+            <FaBookOpen />
+            Exportar Obsidian
+          </a>
+          <a
+            href={`/api/fanwiki/${encodeURIComponent(fanwikiId)}/export/hdwreader`}
+            className="flex items-center gap-2 px-3 py-2 text-xs rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)] transition-colors"
+            title="Descargar una wiki portátil para HackDeepWikiReader"
+            data-testid="fanwiki-export-hdwreader"
+          >
+            <FaMobileAlt />
+            Exportar HDWReader
+          </a>
+          <span className="ml-auto text-[11px] text-[var(--muted)]">
+            La reparación inicial se ejecuta automáticamente al importar.
+          </span>
+        </div>
+      )}
+
       {error && (
         <div className="px-4 py-2 border-b border-[var(--highlight)]/30 bg-[var(--highlight)]/10 text-[var(--highlight)] text-sm">
           {error}
+        </div>
+      )}
+      {toolError && (
+        <div className="px-4 py-2 border-b border-red-500/30 bg-red-500/10 text-red-400 text-sm">
+          {toolError}
+        </div>
+      )}
+      {toolMessage && (
+        <div className="px-4 py-2 border-b border-emerald-500/30 bg-emerald-500/10 text-emerald-400 text-sm">
+          {toolMessage}
         </div>
       )}
 
@@ -348,6 +483,67 @@ export default function FanwikiReaderPage() {
         currentPageId={currentPath || undefined}
         title={messages.ask?.title || 'Chat con la wiki'}
         fabAriaLabel={messages.ask?.title || 'Preguntar a esta wiki'}
+      />
+
+      {isAttachModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4">
+          <div className="w-full max-w-lg rounded-lg border border-[var(--border-color)] bg-[var(--card-bg)] p-5 shadow-custom">
+            <h2 className="text-lg font-semibold text-[var(--foreground)]">
+              Añadir imágenes a {metadata?.name}
+            </h2>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              Selecciona una carpeta local. Se buscarán por nombre las imágenes que el XML referencia,
+              se copiarán dentro de la wiki y se actualizarán sus artículos sin repetir la importación.
+            </p>
+            <div className="mt-4 flex gap-2">
+              <input
+                type="text"
+                value={imagesDir}
+                onChange={(event) => setImagesDir(event.target.value)}
+                placeholder="/ruta/a/las/imagenes"
+                className="input-japanese min-w-0 flex-1 rounded-md border border-[var(--border-color)] bg-transparent px-3 py-2 text-sm text-[var(--foreground)]"
+                aria-label="Carpeta de imágenes"
+              />
+              <button
+                type="button"
+                onClick={() => setIsImagesBrowserOpen(true)}
+                className="px-3 py-2 text-sm rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:border-[var(--accent-primary)]"
+              >
+                Examinar
+              </button>
+            </div>
+            {toolError && (
+              <p className="mt-3 text-sm text-red-400">{toolError}</p>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsAttachModalOpen(false)}
+                disabled={toolRunning === 'attach'}
+                className="px-4 py-2 text-sm rounded-md text-[var(--foreground)] hover:bg-[var(--background)] disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={attachImages}
+                disabled={toolRunning === 'attach' || !imagesDir.trim()}
+                className="btn-japanese px-4 py-2 text-sm rounded-md disabled:opacity-50"
+              >
+                {toolRunning === 'attach' ? 'Añadiendo…' : 'Añadir imágenes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <FileBrowserModal
+        isOpen={isImagesBrowserOpen}
+        onClose={() => setIsImagesBrowserOpen(false)}
+        onSelect={setImagesDir}
+        mode="directory"
+        initialPath={imagesDir || undefined}
+        title="Seleccionar carpeta de imágenes"
       />
     </div>
   );

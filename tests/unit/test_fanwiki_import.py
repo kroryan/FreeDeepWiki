@@ -1,10 +1,11 @@
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from api import fanwiki_library
-from api.fanwiki_import import import_dump, inspect_dump
+from api.fanwiki_import import attach_images, import_dump, inspect_dump
 
 
 SAMPLE_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -133,6 +134,7 @@ def test_reader_markdown_removes_mediawiki_layout_but_keeps_content():
 = Navigation =
 | [https://example.test External page]
 |}
+![Logo](../_images/logo.png)
 <inputbox>
 type=search2
 </inputbox>
@@ -144,3 +146,122 @@ type=search2
     assert "Welcome to **EVE**" in rendered
     assert "# Navigation" in rendered
     assert "[External page](https://example.test)" in rendered
+    assert "![Logo](../_images/logo.png)" in rendered
+
+
+def test_import_and_later_attach_images_use_the_shared_images_folder(
+    tmp_path, monkeypatch
+):
+    xml_path = tmp_path / "wiki.xml"
+    xml_path.write_text(
+        SAMPLE_XML.replace(
+            "Hello [[Beta Page]].",
+            "Hello [[Beta Page]]. [[File:Ship Logo.png|The ship logo]]",
+        ),
+        encoding="utf-8",
+    )
+    import_dir = tmp_path / "repos" / "website_example.test"
+    monkeypatch.setattr(
+        "api.fanwiki_import.website_local_dir",
+        lambda _start_url: str(import_dir),
+    )
+
+    info = inspect_dump(str(xml_path))
+    import_dump(str(xml_path), info, {0, 14}, fresh=True)
+    alpha_path = import_dir / "wiki" / "Alpha_Page.md"
+    assert "imagen no disponible: Ship Logo.png" in alpha_path.read_text(encoding="utf-8")
+
+    images_dir = tmp_path / "images"
+    images_dir.mkdir()
+    (images_dir / "Ship_Logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    result = attach_images(str(import_dir), str(images_dir))
+
+    content = alpha_path.read_text(encoding="utf-8")
+    assert result.images_attached == 1
+    assert "![The ship logo](../_images/Ship_Logo.png)" in content
+    assert (import_dir / "_images" / "Ship_Logo.png").is_file()
+
+    imported_with_images = import_dump(
+        str(xml_path),
+        info,
+        {0, 14},
+        fresh=True,
+        images_dir=str(images_dir),
+    )
+    assert imported_with_images["image_count"] == 1
+    assert "![The ship logo](../_images/Ship_Logo.png)" in alpha_path.read_text(
+        encoding="utf-8"
+    )
+
+
+def test_imported_wiki_exports_include_pages_links_and_images(tmp_path, monkeypatch):
+    import_dir = tmp_path / "repos" / "website_example.test"
+    (import_dir / "wiki").mkdir(parents=True)
+    (import_dir / "_images").mkdir()
+    (import_dir / "wiki" / "Alpha.md").write_text(
+        "---\n"
+        'url: "https://example.test/wiki/Alpha"\n'
+        'title: "Alpha"\n'
+        "likely_user_content: false\n"
+        "depth: 0\n"
+        "---\n\n"
+        "# Alpha\n\n[Beta](Beta.md)\n\n![Logo](../_images/logo.png)\n",
+        encoding="utf-8",
+    )
+    (import_dir / "wiki" / "Beta.md").write_text("# Beta\n", encoding="utf-8")
+    (import_dir / "_images" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    meta = {
+        "source_type": "fanwiki",
+        "start_url": "https://example.test/wiki/Main_Page",
+        "wiki_name": "Test Wiki",
+        "page_count": 2,
+        "pages": [
+            {
+                "relpath": "wiki/Alpha.md",
+                "title": "Alpha",
+                "url": "https://example.test/wiki/Alpha",
+                "categories": ["Ships"],
+            },
+            {
+                "relpath": "wiki/Beta.md",
+                "title": "Beta",
+                "url": "https://example.test/wiki/Beta",
+                "categories": [],
+            },
+        ],
+    }
+    monkeypatch.setattr(fanwiki_library, "_find", lambda _entry_id: (str(import_dir), meta))
+
+    obsidian_path = tmp_path / "wiki.zip"
+    obsidian_result = fanwiki_library.export_obsidian("source", str(obsidian_path))
+    assert obsidian_result == {
+        "format": "obsidian",
+        "page_count": 2,
+        "asset_count": 1,
+        "title": "Test Wiki",
+    }
+    with zipfile.ZipFile(obsidian_path) as archive:
+        names = set(archive.namelist())
+        assert "Test Wiki/Home.md" in names
+        assert "Test Wiki/wiki/Alpha.md" in names
+        assert "Test Wiki/wiki/Beta.md" in names
+        assert "Test Wiki/_images/logo.png" in names
+        assert "[Beta](Beta.md)" in archive.read("Test Wiki/wiki/Alpha.md").decode()
+
+    reader_path = tmp_path / "wiki.hdwreader"
+    reader_result = fanwiki_library.export_hdwreader("source", str(reader_path))
+    assert reader_result["page_count"] == 2
+    assert reader_result["asset_count"] == 1
+    with zipfile.ZipFile(reader_path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["format_version"] == 1
+        assert manifest["repo_type"] == "fanwiki"
+        assert manifest["source_type"] == "mediawiki_xml"
+        assert len(manifest["pages"]) == 2
+        assert manifest["assets"] == ["assets/logo.png"]
+        alpha = next(page for page in manifest["pages"] if page["title"] == "Alpha")
+        beta = next(page for page in manifest["pages"] if page["title"] == "Beta")
+        content = archive.read(alpha["file"]).decode()
+        assert f"[Beta]({beta['id']}.md)" in content
+        assert "![Logo](../assets/logo.png)" in content
+        assert alpha["relatedPages"] == [beta["id"]]
