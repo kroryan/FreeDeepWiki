@@ -1415,6 +1415,8 @@ When designing the wiki structure, include pages that would benefit from visual 
 ${isComprehensiveView ? `
 ${comprehensiveSections}
 
+IMPORTANT -- section nesting: keep the section hierarchy SHALLOW. Aim for at most 3 levels (a top-level section, its subsections, and at most one level of subsections beneath those) -- only go one level deeper than that (4 total) if the wiki is genuinely large/comprehensive and truly needs it. Never chain deeper than 4 levels under any circumstances. Do NOT chain sections into a long line (section -> subsection -> subsection -> subsection -> ...); group related sections as siblings under the same shallow parent instead. Most sections should simply be top-level with no subsections at all.
+
 Return your analysis in the following XML format:
 
 <wiki_structure>
@@ -1431,7 +1433,8 @@ Return your analysis in the following XML format:
         <section_ref>section-2</section_ref>
       </subsections>
     </section>
-    <!-- More sections as needed -->
+    <!-- More sections as needed. Remember: section-2 above is a leaf here --
+         it must not itself declare a <subsections> block. -->
   </sections>
   <pages>
     <page id="page-1">
