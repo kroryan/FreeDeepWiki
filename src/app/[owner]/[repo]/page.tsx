@@ -257,7 +257,8 @@ async function fetchRepoStructureViaBackendClone(
   repoUrl: string,
   repoType: string,
   token: string,
-  onProgress: (progress: CloneProgress | null) => void
+  onProgress: (progress: CloneProgress | null) => void,
+  force: boolean = false
 ): Promise<BackendRepoStructure | null> {
   const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
 
@@ -277,7 +278,7 @@ async function fetchRepoStructureViaBackendClone(
 
       ws.onopen = () => {
         clearTimeout(timeout);
-        ws.send(JSON.stringify({ repo_url: repoUrl, repo_type: repoType, token: token || undefined }));
+        ws.send(JSON.stringify({ repo_url: repoUrl, repo_type: repoType, token: token || undefined, force }));
       };
 
       ws.onmessage = (event) => {
@@ -325,7 +326,7 @@ async function fetchRepoStructureViaBackendClone(
       const response = await fetch(`/api/repo/structure`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repo_url: repoUrl, repo_type: repoType, token: token || undefined }),
+        body: JSON.stringify({ repo_url: repoUrl, repo_type: repoType, token: token || undefined, force }),
       });
       if (!response.ok) return null;
       const data = await response.json();
@@ -1000,6 +1001,15 @@ Remember:
           // here and previously leaked raw FDW control frames straight into
           // saved wiki content when this wasn't set.
           enable_tool_calling: false,
+          // Deliberately NOT force_refresh here, even on a refresh: the
+          // structure-planning request in determineWikiStructure (which
+          // always runs immediately before this, once per refresh) already
+          // sends force_refresh and rebuilds the embeddings index fresh on
+          // disk. Every page's /ws/chat request creates its own RAG instance
+          // and calls prepare_retriever regardless, but that just *loads*
+          // the (already fresh) .pkl -- forcing a rebuild here too would
+          // re-embed the entire repo from scratch again for every single
+          // page (N pages = N full re-embeds instead of 1).
           retrieval_query: [
             page.title,
             page.content,
@@ -1190,7 +1200,7 @@ Remember:
   }, [generatedPages, currentToken, effectiveRepoInfo, selectedProviderState, selectedModelState, isCustomSelectedModelState, customSelectedModelState, modelExcludedDirs, modelExcludedFiles, modelIncludedDirs, modelIncludedFiles, technicalAnalysisEnabled, language, activeContentRequests, generateFileUrl]);
 
   // Determine the wiki structure from repository data
-  const determineWikiStructure = useCallback(async (fileTree: string, readme: string, owner: string, repo: string) => {
+  const determineWikiStructure = useCallback(async (fileTree: string, readme: string, owner: string, repo: string, force: boolean = false) => {
     if (!owner || !repo) {
       setError('Invalid repository information. Owner and repo name are required.');
       setIsLoading(false);
@@ -1309,6 +1319,7 @@ Each section should contain relevant pages. For example, the "Frontend Component
         // One-shot structure determination, not a chat -- same reasoning as
         // the page-generation request body above.
         enable_tool_calling: false,
+        force_refresh: force,
         retrieval_query: isWebsite
           ? (technicalAnalysisEnabled
               ? `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page technical wiki analyzing the ${repo} website's own architecture, page structure, and technology -- not its subject content.`
@@ -1924,7 +1935,7 @@ IMPORTANT:
   }, [generatePageContent, currentToken, effectiveRepoInfo, pagesInProgress.size, structureRequestInProgress, selectedProviderState, selectedModelState, isCustomSelectedModelState, customSelectedModelState, modelExcludedDirs, modelExcludedFiles, modelIncludedDirs, modelIncludedFiles, technicalAnalysisEnabled, language, messages.loading, isComprehensiveView, pageCount]);
 
   // Fetch repository structure using GitHub or GitLab API
-  const fetchRepositoryStructure = useCallback(async () => {
+  const fetchRepositoryStructure = useCallback(async (force: boolean = false) => {
     // If a request is already in progress, don't start another one
     if (requestInProgress) {
       console.log('Repository fetch already in progress, skipping duplicate call');
@@ -1970,7 +1981,7 @@ IMPORTANT:
               subdomains: crawlSubdomainsParam,
               respectRobots: crawlRespectRobotsParam,
             },
-            forceFreshGeneration.current,
+            force,
             (progress) => {
               setCloneProgress(progress);
               if (progress) {
@@ -2014,7 +2025,8 @@ IMPORTANT:
               if (progress) {
                 setLoadingMessage(`${progress.phase}${progress.percent ? ` ${progress.percent}%` : ''}`);
               }
-            }
+            },
+            force
           );
           if (cloneResult) {
             fileTreeData = cloneResult.fileTreeData;
@@ -2355,7 +2367,7 @@ IMPORTANT:
       } // end !structureFetchedViaBackendClone
 
       // Now determine the wiki structure
-      await determineWikiStructure(fileTreeData, readmeContent, owner, repo);
+      await determineWikiStructure(fileTreeData, readmeContent, owner, repo, force);
 
     } catch (error) {
       console.error('Error fetching repository structure:', error);
@@ -3090,9 +3102,18 @@ IMPORTANT:
         // without this skip, refresh would just reload the old wiki and bounce
         // the user straight back.
         if (forceFreshGeneration.current) {
+          // Capture before resetting: fetchRepositoryStructure (and everything
+          // it calls -- the clone/crawl step, structure planning, per-page
+          // generation) now takes `force` as an explicit argument instead of
+          // reading this ref internally, specifically so this reset can't run
+          // before the value is actually consumed (it used to -- reading
+          // forceFreshGeneration.current from inside fetchRepositoryStructure
+          // always saw `false` here, since this line already flipped it
+          // before fetchRepositoryStructure() below even started).
+          const isForceRefresh = true;
           forceFreshGeneration.current = false;
-          console.log('Refresh requested: skipping server cache, regenerating wiki.');
-          fetchRepositoryStructure();
+          console.log('Refresh requested: skipping server cache, regenerating wiki with fresh data.');
+          fetchRepositoryStructure(isForceRefresh);
           return;
         }
 

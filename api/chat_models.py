@@ -67,3 +67,11 @@ class ChatCompletionRequest(BaseModel):
     included_files: Optional[str] = Field(None, description="Comma-separated list of file patterns to include exclusively")
     api_key: Optional[str] = Field(None, description="Optional custom API key")
     api_endpoint: Optional[str] = Field(None, description="Optional custom API endpoint")
+    force_refresh: Optional[bool] = Field(
+        False,
+        description=(
+            "'Refresh Wiki' semantics: re-clone git-hosted repos fresh and rebuild the "
+            "RAG embeddings index from scratch instead of trusting a cached .pkl that "
+            "has no way to know the underlying files changed since it was built."
+        ),
+    )

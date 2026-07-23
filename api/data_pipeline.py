@@ -11,6 +11,7 @@ import logging
 import base64
 import glob
 import hashlib
+import shutil
 from api.data_root import get_data_root as get_adalflow_default_root_path
 from adalflow.core.db import LocalDB
 from api.config import configs, DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES
@@ -187,7 +188,8 @@ def _parse_git_progress_line(line: str):
 
 
 async def clone_repo_with_progress(repo_url: str, local_path: str, repo_type: str = None,
-                                    access_token: str = None, on_progress=None) -> None:
+                                    access_token: str = None, on_progress=None,
+                                    force: bool = False) -> None:
     """Same clone `download_repo` performs, but async and reporting git's
     own --progress phases (Enumerating/Counting/Compressing/Receiving/
     Resolving, each 0-100%) via `await on_progress(dict)` as they happen,
@@ -195,7 +197,17 @@ async def clone_repo_with_progress(repo_url: str, local_path: str, repo_type: st
     the /ws/repo/clone endpoint so the UI can show a real progress bar for
     the one potentially slow step in "open a repo for the first time"
     instead of a plain spinner.
+
+    force: "Refresh Wiki" semantics -- wipe an existing clone and re-clone
+        fresh instead of reusing it, so a refresh actually picks up new
+        commits pushed to the remote since the first clone (this repo is
+        never git-pulled otherwise -- see DatabaseManager._create_repo).
     """
+    if force and os.path.exists(local_path):
+        if on_progress:
+            await on_progress({"phase": "Refreshing clone", "percent": 0})
+        shutil.rmtree(local_path, ignore_errors=True)
+
     if os.path.exists(local_path) and os.listdir(local_path):
         if on_progress:
             await on_progress({"phase": "Using existing clone", "percent": 100})
@@ -284,15 +296,20 @@ def _repo_default_branch(local_dir: str) -> str:
         return "main"
 
 
-def get_repo_structure(repo_url: str, repo_type: str, access_token: str = None) -> dict:
+def get_repo_structure(repo_url: str, repo_type: str, access_token: str = None, force: bool = False) -> dict:
     """File tree + default branch + README for a github/gitlab/bitbucket
     repo, read from the same local clone wiki generation itself uses
     (cloning it fresh via download_repo if it isn't there yet) instead of
     the provider's REST API -- the synchronous, no-progress counterpart to
     clone_repo_with_progress, used as the HTTP fallback when the WS
     /ws/repo/clone endpoint is unavailable.
+
+    force: "Refresh Wiki" semantics -- wipe an existing clone and re-clone
+        fresh. See clone_repo_with_progress.
     """
     local_dir = _local_clone_dir(repo_url, repo_type)
+    if force and os.path.isdir(local_dir):
+        shutil.rmtree(local_dir, ignore_errors=True)
     if not (os.path.isdir(local_dir) and os.listdir(local_dir)):
         download_repo(repo_url, local_dir, repo_type, access_token)
     tree, readme_content = _walk_repo_tree(local_dir)
@@ -983,7 +1000,8 @@ class DatabaseManager:
     def prepare_database(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None,
                          embedder_type: str = None, is_ollama_embedder: bool = None,
                          excluded_dirs: List[str] = None, excluded_files: List[str] = None,
-                         included_dirs: List[str] = None, included_files: List[str] = None) -> List[Document]:
+                         included_dirs: List[str] = None, included_files: List[str] = None,
+                         force: bool = False) -> List[Document]:
         """
         Create a new database from the repository.
 
@@ -999,6 +1017,12 @@ class DatabaseManager:
             excluded_files (List[str], optional): List of file patterns to exclude from processing
             included_dirs (List[str], optional): List of directories to include exclusively
             included_files (List[str], optional): List of file patterns to include exclusively
+            force (bool, optional): "Refresh Wiki" semantics -- re-clone git-hosted repos
+                fresh (see _create_repo) AND rebuild the embeddings index from scratch
+                instead of trusting whatever's cached on disk (see prepare_db_index).
+                Without this, a cached .pkl is loaded as-is regardless of whether the
+                underlying files changed since it was built (no mtime/hash check exists),
+                so a "refreshed" wiki could still be written from stale embeddings.
 
         Returns:
             List[Document]: List of Document objects
@@ -1006,11 +1030,11 @@ class DatabaseManager:
         # Handle backward compatibility
         if embedder_type is None and is_ollama_embedder is not None:
             embedder_type = 'ollama' if is_ollama_embedder else None
-        
+
         self.reset_database()
-        self._create_repo(repo_url_or_path, repo_type, access_token)
+        self._create_repo(repo_url_or_path, repo_type, access_token, force=force)
         return self.prepare_db_index(embedder_type=embedder_type, excluded_dirs=excluded_dirs, excluded_files=excluded_files,
-                                   included_dirs=included_dirs, included_files=included_files)
+                                   included_dirs=included_dirs, included_files=included_files, force=force)
 
     def reset_database(self):
         """
@@ -1035,7 +1059,8 @@ class DatabaseManager:
             repo_name = url_parts[-1].replace(".git", "")
         return repo_name
 
-    def _create_repo(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None) -> None:
+    def _create_repo(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None,
+                      force: bool = False) -> None:
         """
         Download and prepare all paths.
         Paths:
@@ -1046,6 +1071,12 @@ class DatabaseManager:
             repo_type(str): Type of repository
             repo_url_or_path (str): The URL or local path of the repository
             access_token (str, optional): Access token for private repositories
+            force (bool, optional): "Refresh Wiki" semantics -- re-clone a git-hosted
+                repo from scratch instead of reusing whatever's already on disk, so
+                the wiki reflects the remote's current state instead of whatever
+                commit happened to be cloned the first time. No-op for local paths
+                (already read live from disk) and websites (their own /ws/website/crawl
+                "fresh" flag already handles this).
         """
         logger.info(f"Preparing repo storage for {repo_url_or_path}...")
 
@@ -1078,6 +1109,10 @@ class DatabaseManager:
                 save_repo_dir = os.path.join(root_path, "repos", repo_name)
 
                 # Check if the repository directory already exists and is not empty
+                if force and os.path.exists(save_repo_dir):
+                    logger.info(f"Force refresh requested: removing existing clone at {save_repo_dir} to re-clone fresh.")
+                    shutil.rmtree(save_repo_dir, ignore_errors=True)
+
                 if not (os.path.exists(save_repo_dir) and os.listdir(save_repo_dir)):
                     # Only download if the repository doesn't exist or is empty
                     download_repo(repo_url_or_path, save_repo_dir, repo_type, access_token)
@@ -1110,9 +1145,10 @@ class DatabaseManager:
             logger.error(f"Failed to create repository structure: {e}")
             raise
 
-    def prepare_db_index(self, embedder_type: str = None, is_ollama_embedder: bool = None, 
+    def prepare_db_index(self, embedder_type: str = None, is_ollama_embedder: bool = None,
                         excluded_dirs: List[str] = None, excluded_files: List[str] = None,
-                        included_dirs: List[str] = None, included_files: List[str] = None) -> List[Document]:
+                        included_dirs: List[str] = None, included_files: List[str] = None,
+                        force: bool = False) -> List[Document]:
         """
         Prepare the indexed database for the repository.
 
@@ -1125,6 +1161,11 @@ class DatabaseManager:
             excluded_files (List[str], optional): List of file patterns to exclude from processing
             included_dirs (List[str], optional): List of directories to include exclusively
             included_files (List[str], optional): List of file patterns to include exclusively
+            force (bool, optional): "Refresh Wiki" semantics -- skip loading the cached
+                .pkl (there's no mtime/hash check, so a cache hit is otherwise trusted
+                blindly even if the underlying files changed since it was built) and
+                rebuild the embeddings index from scratch so RAG-backed content actually
+                reflects the current state of the repo/folder/site.
 
         Returns:
             List[Document]: List of Document objects
@@ -1148,7 +1189,9 @@ class DatabaseManager:
         if embedder_type is None and is_ollama_embedder is not None:
             embedder_type = 'ollama' if is_ollama_embedder else None
         # check the database
-        if self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
+        if force and self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
+            logger.info("Force refresh requested: discarding cached embeddings database to rebuild fresh.")
+        elif self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
             logger.info("Loading existing database...")
             try:
                 self.db = LocalDB.load_state(self.repo_paths["save_db_file"])

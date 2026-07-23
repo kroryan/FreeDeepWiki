@@ -195,6 +195,7 @@ class RepoStructureRequest(BaseModel):
     repo_url: str = Field(..., description="Repository URL")
     repo_type: str = Field(..., description="Repository type: github, gitlab, or bitbucket")
     token: Optional[str] = Field(None, description="Personal access token for private repositories")
+    force: Optional[bool] = Field(False, description="'Refresh Wiki' semantics -- re-clone fresh instead of reusing the existing local clone")
 
 # --- Model Configuration Models ---
 class Model(BaseModel):
@@ -1622,7 +1623,7 @@ async def get_repo_structure_endpoint(request_data: RepoStructureRequest):
     from api.data_pipeline import get_repo_structure as _get_repo_structure
     try:
         structure = await asyncio.to_thread(
-            _get_repo_structure, request_data.repo_url, request_data.repo_type, request_data.token
+            _get_repo_structure, request_data.repo_url, request_data.repo_type, request_data.token, request_data.force
         )
     except Exception as e:
         logger.error(f"Error building repo structure for {request_data.repo_url}: {e}")
@@ -1645,6 +1646,7 @@ async def ws_repo_clone(websocket: WebSocket):
         repo_url = (payload.get("repo_url") or "").strip()
         repo_type = payload.get("repo_type") or "github"
         token = payload.get("token") or None
+        force = bool(payload.get("force", False))
 
         if not repo_url:
             await websocket.send_json({"type": "error", "message": "repo_url is required"})
@@ -1662,7 +1664,7 @@ async def ws_repo_clone(websocket: WebSocket):
         async def on_progress(evt):
             await websocket.send_json({"type": "progress", **evt})
 
-        await clone_repo_with_progress(repo_url, local_dir, repo_type, token, on_progress)
+        await clone_repo_with_progress(repo_url, local_dir, repo_type, token, on_progress, force=force)
 
         tree, readme_content = await asyncio.to_thread(_walk_repo_tree, local_dir)
         default_branch = await asyncio.to_thread(_repo_default_branch, local_dir)

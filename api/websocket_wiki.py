@@ -114,7 +114,7 @@ async def handle_websocket_chat(websocket: WebSocket):
                     included_files = [unquote(file_pattern) for file_pattern in request.included_files.split('\n') if file_pattern.strip()]
                     logger.info(f"Using custom included files: {included_files}")
 
-                request_rag.prepare_retriever(request.repo_url, request.type, request.token, excluded_dirs, excluded_files, included_dirs, included_files)
+                request_rag.prepare_retriever(request.repo_url, request.type, request.token, excluded_dirs, excluded_files, included_dirs, included_files, force=request.force_refresh)
                 logger.info(f"Retriever prepared for {request.repo_url}")
             except ValueError as e:
                 if "No valid documents with embeddings found" in str(e):
