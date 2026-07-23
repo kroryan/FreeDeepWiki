@@ -1,11 +1,7 @@
 name: Build and Push Docker Image
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  # Allow manual trigger
+  # Docker build/push is done manually by the maintainer, not on every push.
   workflow_dispatch:
 
 env:
