@@ -36,6 +36,12 @@ from api.logging_config import setup_logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# Character budget for `query` in the token-limit fallback path (see
+# handle_websocket_chat's exception handler below). Roughly a few thousand
+# tokens -- generous enough for real questions, small enough to actually fit
+# after a "prompt too long" error, whatever the original size was.
+MAX_FALLBACK_QUERY_CHARS = 8000
+
 
 async def handle_websocket_chat(websocket: WebSocket):
     """
@@ -588,7 +594,25 @@ async def handle_websocket_chat(websocket: WebSocket):
                         simplified_prompt += f"<currentFileContent path=\"{request.filePath}\">\n{file_content}\n</currentFileContent>\n\n"
 
                     simplified_prompt += "<note>Answering without retrieval augmentation due to input size constraints.</note>\n\n"
-                    simplified_prompt += f"<query>\n{query}\n</query>\n\nAssistant: "
+
+                    # Dropping context_block/file_content above only helps when the RAG
+                    # context was the oversized part. It can just as easily be `query`
+                    # itself -- e.g. a wiki page-generation prompt whose relevant_files
+                    # list the frontend embedded is what's huge -- in which case the
+                    # first attempt already excluded RAG context (input_too_large) and
+                    # this fallback would resend virtually the same oversized prompt
+                    # and fail identically. Cap query defensively: keep the head (task
+                    # instructions) and tail (the actual question, usually at the end)
+                    # and drop the middle, which is where a runaway file/content list
+                    # tends to live.
+                    fallback_query = query
+                    if len(fallback_query) > MAX_FALLBACK_QUERY_CHARS:
+                        head = fallback_query[: MAX_FALLBACK_QUERY_CHARS // 2]
+                        tail = fallback_query[-MAX_FALLBACK_QUERY_CHARS // 2:]
+                        fallback_query = f"{head}\n\n[... truncated: original query was {len(query)} characters, too large to process ...]\n\n{tail}"
+                        logger.warning(f"Query itself was oversized ({len(query)} chars); truncated for fallback")
+
+                    simplified_prompt += f"<query>\n{fallback_query}\n</query>\n\nAssistant: "
 
                     # Google's original fallback branch recomputed model_config
                     # from scratch instead of reusing the outer one; every other

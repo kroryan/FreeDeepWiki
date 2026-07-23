@@ -247,3 +247,19 @@ class OllamaDocumentProcessor(DataComponent):
             len(output),
         )
         return successful_docs
+
+
+# adalflow.core.component.Component normally registers a class into
+# EntityMapping the first time it's *instantiated* (see Component.__init__).
+# That never happens on a plain cache load: DatabaseManager.prepare_db_index
+# calls LocalDB.load_state() as soon as a cached .pkl exists and returns
+# early, without ever building a fresh data_transformer (which is the only
+# place that instantiates OllamaDocumentProcessor). Importing this module
+# (data_pipeline.py does, at module load time, well before any load_state()
+# call) is therefore not enough by itself -- the class must be registered
+# explicitly so from_dict can reconstruct the cached Sequential/TextSplitter
+# pipeline without logging "Unknown class type: OllamaDocumentProcessor" on
+# every single reload of an Ollama-embedded project.
+from adalflow.utils.registry import EntityMapping  # noqa: E402
+
+EntityMapping.register("OllamaDocumentProcessor", OllamaDocumentProcessor)

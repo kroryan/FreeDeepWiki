@@ -224,6 +224,16 @@ interface BackendRepoStructure {
   defaultBranch: string;
 }
 
+// Hard cap on how many relevant_files a single wiki page's generation prompt
+// will include. The wiki-structure planning prompt (determineWikiStructure)
+// only asks the LLM for "actual files" per page -- it never enforced a
+// maximum -- so for a large repository the planner can assign hundreds or
+// thousands of paths to one page. Since each path becomes a line in the
+// page-content prompt, an uncapped list can balloon the prompt to hundreds
+// of thousands of tokens, well past any model's context window (verified:
+// a ~14,600-file C# project produced a single-page prompt of 400k+ tokens).
+const MAX_RELEVANT_FILES_PER_PAGE = 30;
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function treeToFileList(tree: any[]): string {
   return tree
@@ -770,7 +780,16 @@ export default function RepoWikiPage() {
         setPagesInProgress(prev => new Set(prev).add(page.id));
         // Don't set loading message for individual pages during queue processing
 
-        const filePaths = page.filePaths;
+        // The wiki-structure planning step has no hard limit on how many
+        // <file_path> entries it can put in a page's relevant_files (see
+        // determineWikiStructure's prompt below), and for a large repo (e.g.
+        // a full game/engine source tree with 10k+ code files) the planning
+        // LLM can assign hundreds/thousands of paths to a single page. That
+        // list gets embedded verbatim into this page's generation prompt, so
+        // without a cap here the prompt itself can balloon past any model's
+        // context window regardless of how well file_tree was filtered
+        // upstream. Cap defensively at the point of use.
+        const filePaths = page.filePaths.slice(0, MAX_RELEVANT_FILES_PER_PAGE);
 
         // Store the initially generated content BEFORE rendering/potential modification
         setGeneratedPages(prev => ({
@@ -1273,8 +1292,8 @@ Each section should contain relevant pages.`)
 Each section should contain relevant pages. For example, the "Frontend Components" section might include pages for "Home Page", "Repository Wiki Page", "Ask Component", etc.`;
 
       const relevantFilesNote = isWebsite
-        ? 'The relevant_files should be actual crawled page file paths (from the file tree above) that would be used to generate that page'
-        : 'The relevant_files should be actual files from the repository that would be used to generate that page';
+        ? `The relevant_files should be actual crawled page file paths (from the file tree above) that would be used to generate that page. List at most ${MAX_RELEVANT_FILES_PER_PAGE} pages -- pick the most representative ones rather than every match`
+        : `The relevant_files should be actual files from the repository that would be used to generate that page. List at most ${MAX_RELEVANT_FILES_PER_PAGE} files -- pick the most representative ones rather than every match`;
       const pageFocusNote = isWebsite
         ? (technicalAnalysisEnabled
             ? 'Each page should focus on a specific technical aspect of the website (e.g., a page template, a subsystem, navigation)'

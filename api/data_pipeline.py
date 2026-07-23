@@ -10,6 +10,7 @@ import tiktoken
 import logging
 import base64
 import glob
+import hashlib
 from api.data_root import get_data_root as get_adalflow_default_root_path
 from adalflow.core.db import LocalDB
 from api.config import configs, DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES
@@ -1083,7 +1084,15 @@ class DatabaseManager:
                 else:
                     logger.info(f"Repository already exists at {save_repo_dir}. Using existing repository.")
             else:  # local path
-                repo_name = os.path.basename(repo_url_or_path)
+                # os.path.basename of a path ending in "/" returns "" (the local-repo
+                # UI always appends a trailing slash), which used to collapse the
+                # cache filename to the literal "databases/.pkl" -- every local repo
+                # opened this way shared and clobbered the same cache file. Strip the
+                # trailing slash first, and fall back to a hash of the full path if
+                # basename is still empty (e.g. repo_url_or_path == "/").
+                repo_name = os.path.basename(repo_url_or_path.rstrip('/').rstrip('\\'))
+                if not repo_name:
+                    repo_name = hashlib.sha1(repo_url_or_path.encode('utf-8')).hexdigest()[:16]
                 save_repo_dir = repo_url_or_path
 
             save_db_file = os.path.join(root_path, "databases", f"{repo_name}.pkl")

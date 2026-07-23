@@ -223,7 +223,7 @@ class ModelConfig(BaseModel):
 class AuthorizationConfig(BaseModel):
     code: str = Field(..., description="Authorization code")
 
-from api.config import configs, WIKI_AUTH_MODE, WIKI_AUTH_CODE
+from api.config import configs, WIKI_AUTH_MODE, WIKI_AUTH_CODE, DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES
 # Aliased: this module already defines its own route handler named
 # get_model_config() (GET /models/config, a completely different zero-arg
 # "list providers" endpoint) -- importing under the same name would shadow it.
@@ -377,8 +377,14 @@ async def probe_models(request: ModelProbeRequest):
                 models = []
                 last_error = None
                 for base in endpoint_candidates:
+                    # Ollama's native API lives at /api/tags, not /v1/api/tags. Users
+                    # commonly save the OpenAI-compatible endpoint (".../v1", copied
+                    # from docs for that mode) in the same field used here for the
+                    # native API probe -- blindly appending /api/tags then produces
+                    # a 404 against .../v1/api/tags. Strip a trailing /v1 first.
+                    ollama_base = base[:-3] if base.endswith("/v1") else base
                     try:
-                        resp = await client.get(f"{base}/api/tags", headers=headers)
+                        resp = await client.get(f"{ollama_base}/api/tags", headers=headers)
                         resp.raise_for_status()
                         data = resp.json()
                         models = [
@@ -537,11 +543,38 @@ async def get_local_repo_structure(path: str = Query(None, description="Path to 
         file_tree_lines = []
         readme_content = ""
 
+        # Same exclusion lists data_pipeline.py already applies when actually
+        # embedding the repo (build/dist/cache/IDE dirs, lockfiles, binaries,
+        # ...). This endpoint used to walk the raw filesystem with almost no
+        # filtering (just hidden dirs/__pycache__/node_modules/.venv), so for
+        # a large non-web project (e.g. a full game/engine source tree with
+        # tens of thousands of files) the wiki-structure planning prompt --
+        # which embeds this file_tree verbatim -- could balloon to hundreds
+        # of thousands of tokens before a single relevant_files list was even
+        # considered, blowing past any local model's context window. Applying
+        # the same filters here keeps the tree limited to what the embedding
+        # pipeline would actually consider anyway.
+        excluded_dir_names = {d.strip("./").rstrip("/") for d in DEFAULT_EXCLUDED_DIRS} | {
+            '__pycache__', 'node_modules', '.venv'
+        }
+        excluded_file_names = set(DEFAULT_EXCLUDED_FILES)
+
+        def _is_excluded_file(name: str) -> bool:
+            if name in excluded_file_names:
+                return True
+            for pattern in excluded_file_names:
+                if pattern.startswith('*.') and name.endswith(pattern[1:]):
+                    return True
+            return False
+
         for root, dirs, files in os.walk(path):
-            # Exclude hidden dirs/files and virtual envs
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d != '__pycache__' and d != 'node_modules' and d != '.venv']
+            # Exclude hidden dirs, virtual envs, and the standard build/cache/
+            # IDE/VCS noise dirs (see DEFAULT_EXCLUDED_DIRS in api/config.py).
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d not in excluded_dir_names]
             for file in files:
                 if file.startswith('.') or file == '__init__.py' or file == '.DS_Store':
+                    continue
+                if _is_excluded_file(file):
                     continue
                 rel_dir = os.path.relpath(root, path)
                 rel_file = os.path.join(rel_dir, file) if rel_dir != '.' else file
