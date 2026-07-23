@@ -15,6 +15,7 @@ import RescanConfigModal, { RescanSelection } from '@/components/vuln/RescanConf
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
 import { getSavedApiCredentials } from '@/utils/apiCredentials';
+import { getBackendWebSocketUrl } from '@/utils/backendUrl';
 import getRepoUrl from '@/utils/getRepoUrl';
 import { WEBSOCKET_CONNECT_TIMEOUT_MS } from '@/utils/timeouts';
 import { extractUrlDomain, extractUrlPath } from '@/utils/urlDecoder';
@@ -261,12 +262,10 @@ async function fetchRepoStructureViaBackendClone(
   onProgress: (progress: CloneProgress | null) => void,
   force: boolean = false
 ): Promise<BackendRepoStructure | null> {
-  const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-
   try {
+    const cloneWebSocketUrl = await getBackendWebSocketUrl('/ws/repo/clone');
     const result = await new Promise<BackendRepoStructure>((resolve, reject) => {
-      const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws');
-      const ws = new WebSocket(`${wsBaseUrl}/ws/repo/clone`);
+      const ws = new WebSocket(cloneWebSocketUrl);
       let settled = false;
 
       const timeout = setTimeout(() => {
@@ -370,11 +369,10 @@ async function fetchWebsiteStructureViaCrawl(
   fresh: boolean,
   onProgress: (progress: CloneProgress | null) => void
 ): Promise<WebsiteCrawlResult | null> {
-  const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-  const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws');
+  const crawlWebSocketUrl = await getBackendWebSocketUrl('/ws/website/crawl');
 
   return new Promise<WebsiteCrawlResult | null>((resolve, reject) => {
-    const ws = new WebSocket(`${wsBaseUrl}/ws/website/crawl`);
+    const ws = new WebSocket(crawlWebSocketUrl);
     let settled = false;
     // Crawls can legitimately take minutes for large scopes -- much longer
     // than a git clone -- so this uses its own generous timeout rather than
@@ -1080,10 +1078,7 @@ Remember:
         let content = '';
 
         try {
-          // Create WebSocket URL from the server base URL
-          const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-          const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-          const wsUrl = `${wsBaseUrl}/ws/chat`;
+          const wsUrl = await getBackendWebSocketUrl('/ws/chat');
 
           // Create a new WebSocket connection
           const ws = new WebSocket(wsUrl);
@@ -1480,10 +1475,7 @@ IMPORTANT:
       let responseText = '';
 
       try {
-        // Create WebSocket URL from the server base URL
-        const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-        const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-        const wsUrl = `${wsBaseUrl}/ws/chat`;
+        const wsUrl = await getBackendWebSocketUrl('/ws/chat');
 
         // Create a new WebSocket connection
         const ws = new WebSocket(wsUrl);
@@ -2562,8 +2554,7 @@ IMPORTANT:
     setVulnProgressMessage('Starting scan…');
     setVulnProgressPercent(0);
 
-    const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-    const wsBaseUrl = serverBaseUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
+    const vulnScanWebSocketUrl = await getBackendWebSocketUrl('/ws/vuln_scan');
     const provider = overrides?.provider ?? selectedProviderState;
     const model = overrides?.model ?? selectedModelState;
     const creds = getSavedApiCredentials(provider);
@@ -2602,7 +2593,7 @@ IMPORTANT:
 
     try {
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`${wsBaseUrl}/ws/vuln_scan`);
+        const ws = new WebSocket(vulnScanWebSocketUrl);
         let settled = false;
         const timeout = setTimeout(() => {
           if (!settled) {
@@ -2809,8 +2800,7 @@ IMPORTANT:
     setWebVulnProgressMessage('Starting scan…');
     setWebVulnProgressPercent(0);
 
-    const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-    const wsBaseUrl = serverBaseUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
+    const webVulnScanWebSocketUrl = await getBackendWebSocketUrl('/ws/web_vuln_scan');
     const provider = overrides?.provider ?? selectedProviderState;
     const model = overrides?.model ?? selectedModelState;
     const creds = getSavedApiCredentials(provider);
@@ -2830,7 +2820,7 @@ IMPORTANT:
 
     try {
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`${wsBaseUrl}/ws/web_vuln_scan`);
+        const ws = new WebSocket(webVulnScanWebSocketUrl);
         let settled = false;
         // The Docker toolkit runs its tools in parallel, but the slowest of
         // them (nikto, or dalfox against a page with many query-param URLs)

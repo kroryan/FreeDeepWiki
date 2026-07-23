@@ -9,6 +9,9 @@ interface ApiProcessedProject {
   repo_type: string;
   submittedAt: number;
   language: string;
+  status?: 'generated' | 'imported';
+  start_url?: string | null;
+  page_count?: number | null;
 }
 // Payload for deleting a project cache
 interface DeleteProjectCachePayload {
@@ -16,6 +19,8 @@ interface DeleteProjectCachePayload {
   repo: string;
   repo_type: string;
   language: string;
+  status?: 'generated' | 'imported';
+  start_url?: string;
 }
 
 /** Type guard to validate DeleteProjectCachePayload at runtime */
@@ -26,7 +31,15 @@ function isDeleteProjectCachePayload(obj: unknown): obj is DeleteProjectCachePay
     'owner' in obj && typeof (obj as Record<string, unknown>).owner === 'string' && ((obj as Record<string, unknown>).owner as string).trim() !== '' &&
     'repo' in obj && typeof (obj as Record<string, unknown>).repo === 'string' && ((obj as Record<string, unknown>).repo as string).trim() !== '' &&
     'repo_type' in obj && typeof (obj as Record<string, unknown>).repo_type === 'string' && ((obj as Record<string, unknown>).repo_type as string).trim() !== '' &&
-    'language' in obj && typeof (obj as Record<string, unknown>).language === 'string' && ((obj as Record<string, unknown>).language as string).trim() !== ''
+    'language' in obj && typeof (obj as Record<string, unknown>).language === 'string' &&
+    (
+      ((obj as Record<string, unknown>).language as string).trim() !== '' ||
+      (
+        (obj as Record<string, unknown>).status === 'imported' &&
+        typeof (obj as Record<string, unknown>).start_url === 'string' &&
+        ((obj as Record<string, unknown>).start_url as string).trim() !== ''
+      )
+    )
   );
 }
 
@@ -81,7 +94,16 @@ export async function DELETE(request: Request) {
         { status: 400 }
       );
     }
-    const { owner, repo, repo_type, language } = body;
+    const { owner, repo, repo_type, language, status, start_url } = body;
+    if (status === 'imported' && start_url) {
+      const params = new URLSearchParams({ start_url });
+      const response = await fetch(
+        `${PYTHON_BACKEND_URL}/api/fanwiki/imported?${params}`,
+        { method: 'DELETE', headers: { 'Content-Type': 'application/json' } },
+      );
+      const responseBody = await response.json().catch(() => ({ error: response.statusText }));
+      return NextResponse.json(responseBody, { status: response.status });
+    }
     const params = new URLSearchParams({ owner, repo, repo_type, language });
     const response = await fetch(`${CACHE_API_ENDPOINT}?${params}`, {
       method: 'DELETE',

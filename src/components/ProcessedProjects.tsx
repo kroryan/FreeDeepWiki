@@ -13,6 +13,9 @@ interface ProcessedProject {
   repo_type: string;
   submittedAt: number;
   language: string;
+  status?: 'generated' | 'imported';
+  start_url?: string | null;
+  page_count?: number | null;
 }
 
 interface ProcessedProjectsProps {
@@ -114,6 +117,8 @@ export default function ProcessedProjects({
           repo: project.repo,
           repo_type: project.repo_type,
           language: project.language,
+          status: project.status,
+          start_url: project.start_url,
         }),
       });
       if (!response.ok) {
@@ -125,6 +130,21 @@ export default function ProcessedProjects({
       console.error('Failed to delete project:', e);
       alert(`Failed to delete project: ${e instanceof Error ? e.message : 'Unknown error'}`);
     }
+  };
+
+  const projectHref = (project: ProcessedProject): string => {
+    if (project.repo_type === 'zim') return `/zim/${project.id}`;
+    if (project.status === 'imported' && project.start_url) {
+      return `/?resume_fanwiki=${encodeURIComponent(project.start_url)}`;
+    }
+    const query = new URLSearchParams({
+      type: project.repo_type,
+      language: project.language || 'en',
+    });
+    if (project.repo_type === 'fanwiki' && project.start_url) {
+      query.set('repo_url', project.start_url);
+    }
+    return `/${project.owner}/${project.repo}?${query.toString()}`;
   };
 
   return (
@@ -205,7 +225,7 @@ export default function ProcessedProjects({
                   <FaTimes className="h-4 w-4" />
                 </button>
                 <Link
-                  href={project.repo_type === 'zim' ? `/zim/${project.id}` : `/${project.owner}/${project.repo}?type=${project.repo_type}&language=${project.language}`}
+                  href={projectHref(project)}
                   className="block"
                 >
                   <h3 className="text-lg font-semibold text-[var(--link-color)] hover:underline mb-2 line-clamp-2">
@@ -213,11 +233,18 @@ export default function ProcessedProjects({
                   </h3>
                   <div className="flex flex-wrap gap-2 mb-3">
                     <span className="px-2 py-1 text-xs bg-[var(--accent-primary)]/10 text-[var(--accent-primary)] rounded-full border border-[var(--accent-primary)]/20">
-                      {project.repo_type}
+                      {project.status === 'imported' ? 'imported XML' : project.repo_type}
                     </span>
-                    <span className="px-2 py-1 text-xs bg-[var(--background)] text-[var(--muted)] rounded-full border border-[var(--border-color)]">
-                      {project.language}
-                    </span>
+                    {project.page_count != null && (
+                      <span className="px-2 py-1 text-xs bg-[var(--background)] text-[var(--muted)] rounded-full border border-[var(--border-color)]">
+                        {project.page_count} pages
+                      </span>
+                    )}
+                    {project.language && (
+                      <span className="px-2 py-1 text-xs bg-[var(--background)] text-[var(--muted)] rounded-full border border-[var(--border-color)]">
+                        {project.language}
+                      </span>
+                    )}
                   </div>
                   <p className="text-xs text-[var(--muted)]">
                     {t('processedOn')} {new Date(project.submittedAt).toLocaleDateString()}
@@ -235,7 +262,7 @@ export default function ProcessedProjects({
                   <FaTimes className="h-4 w-4" />
                 </button>
                 <Link
-                  href={project.repo_type === 'zim' ? `/zim/${project.id}` : `/${project.owner}/${project.repo}?type=${project.repo_type}&language=${project.language}`}
+                  href={projectHref(project)}
                   className="flex items-center justify-between"
                 >
                   <div className="flex-1 min-w-0">
@@ -243,12 +270,12 @@ export default function ProcessedProjects({
                       {project.name}
                     </h3>
                     <p className="text-xs text-[var(--muted)] mt-1">
-                      {t('processedOn')} {new Date(project.submittedAt).toLocaleDateString()} • {project.repo_type} • {project.language}
+                      {t('processedOn')} {new Date(project.submittedAt).toLocaleDateString()} • {project.status === 'imported' ? 'imported XML' : project.repo_type}{project.language ? ` • ${project.language}` : ''}
                     </p>
                   </div>
                   <div className="flex gap-2 ml-4">
                     <span className="px-2 py-1 text-xs bg-[var(--accent-primary)]/10 text-[var(--accent-primary)] rounded border border-[var(--accent-primary)]/20">
-                      {project.repo_type}
+                      {project.status === 'imported' ? 'imported XML' : project.repo_type}
                     </span>
                   </div>
                 </Link>

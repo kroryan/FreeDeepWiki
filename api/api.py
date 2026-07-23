@@ -51,6 +51,7 @@ app.add_middleware(
 from api.data_root import get_data_root as get_adalflow_default_root_path
 from api import zim_reader
 from api import zim_library
+from api import fanwiki_library
 
 # --- Pydantic Models ---
 class WikiPage(BaseModel):
@@ -72,6 +73,9 @@ class ProcessedProjectEntry(BaseModel):
     repo_type: str # Renamed from type to repo_type for clarity with existing models
     submittedAt: int # Timestamp
     language: str # Extracted from filename
+    status: Literal["generated", "imported"] = "generated"
+    start_url: Optional[str] = None
+    page_count: Optional[int] = None
 
 class RepoInfo(BaseModel):
     owner: str
@@ -2010,6 +2014,27 @@ async def fanwiki_structure(start_url: str = Query(..., description="The fanwiki
     return {"tree": tree, "local_dir": local_dir}
 
 
+@app.delete("/api/fanwiki/imported")
+async def delete_imported_fanwiki(
+    start_url: str = Query(..., description="Exact start URL of the imported fanwiki"),
+    authorization_code: Optional[str] = Query(None, description="Authorization code"),
+):
+    """Delete an imported XML source tree after verifying its manifest.
+
+    This is deliberately separate from wiki-cache deletion: an import can
+    exist without a generated release, and deleting a generated release
+    should not silently destroy the reusable source material.
+    """
+    if WIKI_AUTH_MODE and (
+        not authorization_code or authorization_code != WIKI_AUTH_CODE
+    ):
+        raise HTTPException(status_code=401, detail="Authorization code is invalid")
+    deleted = await asyncio.to_thread(fanwiki_library.delete, start_url)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Imported fanwiki source not found")
+    return {"message": "Imported fanwiki source deleted successfully"}
+
+
 class FanwikiRepairLinksRequest(BaseModel):
     start_url: str = Field(..., description="The fanwiki's synthetic start URL, as returned by /ws/fanwiki/import")
 
@@ -2515,12 +2540,12 @@ async def get_processed_projects():
     # WIKI_CACHE_DIR is already defined globally in the file
 
     try:
-        if not os.path.exists(WIKI_CACHE_DIR):
-            logger.info(f"Cache directory {WIKI_CACHE_DIR} not found. Returning empty list.")
-            return []
-
-        logger.info(f"Scanning for project cache files in: {WIKI_CACHE_DIR}")
-        filenames = await asyncio.to_thread(os.listdir, WIKI_CACHE_DIR) # Use asyncio.to_thread for os.listdir
+        if os.path.exists(WIKI_CACHE_DIR):
+            logger.info(f"Scanning for project cache files in: {WIKI_CACHE_DIR}")
+            filenames = await asyncio.to_thread(os.listdir, WIKI_CACHE_DIR)
+        else:
+            logger.info(f"Cache directory {WIKI_CACHE_DIR} not found.")
+            filenames = []
 
         newest_projects: Dict[tuple, ProcessedProjectEntry] = {}
         for filename in filenames:
@@ -2554,14 +2579,39 @@ async def get_processed_projects():
                         language = parts[-1] # language is the last part
                         repo = "_".join(parts[2:-1]) # repo can contain underscores
 
+                        # The cache payload is the authoritative source for
+                        # RepoInfo. Besides avoiding filename-decoding loss, it
+                        # restores fanwiki repoUrl/start_url so a list entry can
+                        # be reopened after a browser reload.
+                        cached_repo = None
+                        cached_title = None
+                        try:
+                            with open(file_path, "r", encoding="utf-8") as cache_file:
+                                cache_payload = json.load(cache_file)
+                            cached_repo = cache_payload.get("repo")
+                            cached_title = (cache_payload.get("wiki_structure") or {}).get("title")
+                        except (OSError, json.JSONDecodeError):
+                            pass
+                        if isinstance(cached_repo, dict):
+                            repo_type = str(cached_repo.get("type") or repo_type)
+                            owner = str(cached_repo.get("owner") or owner)
+                            repo = str(cached_repo.get("repo") or repo)
+                        start_url = (
+                            str(cached_repo.get("repoUrl") or "")
+                            if isinstance(cached_repo, dict)
+                            else ""
+                        )
+
                         entry = ProcessedProjectEntry(
-                                id=filename,
-                                owner=owner,
-                                repo=repo,
-                                name=f"{owner}/{repo}",
-                                repo_type=repo_type,
-                                submittedAt=int(stats.st_mtime * 1000), # Convert to milliseconds
-                                language=language
+                            id=filename,
+                            owner=owner,
+                            repo=repo,
+                            name=cached_title or f"{owner}/{repo}",
+                            repo_type=repo_type,
+                            submittedAt=int(stats.st_mtime * 1000),
+                            language=language,
+                            status="generated",
+                            start_url=start_url or None,
                         )
                         project_key = (repo_type, owner, repo, language)
                         previous = newest_projects.get(project_key)
@@ -2574,6 +2624,39 @@ async def get_processed_projects():
                     continue # Skip this file on error
 
         project_entries = list(newest_projects.values())
+
+        # Imported XML sources are valid durable projects before an LLM wiki
+        # exists. Do not duplicate one once at least one generated release for
+        # that fanwiki is already listed.
+        imported_fanwikis = await asyncio.to_thread(fanwiki_library.list_all)
+        imported_by_route = {
+            (entry["owner"], entry["repo"]): entry for entry in imported_fanwikis
+        }
+        # Old generated caches may predate RepoInfo.repoUrl persistence. The
+        # durable import manifest can restore it by the same fanwiki route.
+        for entry in project_entries:
+            if entry.repo_type == "fanwiki" and not entry.start_url:
+                imported_match = imported_by_route.get((entry.owner, entry.repo))
+                if imported_match:
+                    entry.start_url = imported_match["start_url"]
+
+        generated_fanwiki_urls = {
+            entry.start_url
+            for entry in project_entries
+            if entry.repo_type == "fanwiki" and entry.start_url
+        }
+        generated_fanwiki_routes = {
+            (entry.owner, entry.repo)
+            for entry in project_entries
+            if entry.repo_type == "fanwiki"
+        }
+        for imported in imported_fanwikis:
+            if (
+                imported["start_url"] in generated_fanwiki_urls
+                or (imported["owner"], imported["repo"]) in generated_fanwiki_routes
+            ):
+                continue
+            project_entries.append(ProcessedProjectEntry(**imported))
 
         # Mix in imported .zim archives, using the same list shape so the
         # frontend can render them alongside LLM-generated wikis. A .zim has

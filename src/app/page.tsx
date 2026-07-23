@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { FaWikipediaW, FaGithub, FaMobileAlt } from 'react-icons/fa';
 import ThemeToggle from '@/components/theme-toggle';
@@ -15,6 +15,7 @@ import {
 import ProcessedProjects from '@/components/ProcessedProjects';
 import { extractUrlPath, extractUrlDomain } from '@/utils/urlDecoder';
 import { useProcessedProjects } from '@/hooks/useProcessedProjects';
+import { getBackendWebSocketUrl } from '@/utils/backendUrl';
 
 import { useLanguage } from '@/contexts/LanguageContext';
 
@@ -49,8 +50,11 @@ const DEMO_SEQUENCE_CHART = `sequenceDiagram
 
 export default function Home() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const resumeFanwikiParam = searchParams.get('resume_fanwiki');
   const { language, setLanguage, messages, supportedLanguages } = useLanguage();
-  const { projects, isLoading: projectsLoading } = useProcessedProjects();
+  const [projectsListKey, setProjectsListKey] = useState(0);
+  const { projects, isLoading: projectsLoading } = useProcessedProjects(projectsListKey);
 
   // Create a simple translation function
   const t = (key: string, params: Record<string, string | number> = {}): string => {
@@ -239,6 +243,28 @@ export default function Home() {
   // scan) for the actual generation step rather than duplicating all of it.
   const [pendingFanwikiStartUrl, setPendingFanwikiStartUrl] = useState<string | null>(null);
 
+  // Imported XML sources are server-side state, so resuming one must not
+  // depend on the transient React state that existed in the tab which did
+  // the import. ProcessedProjects links imported-but-not-yet-generated
+  // sources back here with this durable start URL.
+  useEffect(() => {
+    const resumeUrl = resumeFanwikiParam;
+    if (!resumeUrl) return;
+    try {
+      const parsed = new URL(resumeUrl);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
+    } catch {
+      return;
+    }
+    setPendingFanwikiStartUrl(resumeUrl);
+    setDetectedInputType('fanwiki');
+    loadConfigFromCache(resumeUrl);
+    setIsConfigModalOpen(true);
+    // loadConfigFromCache is intentionally render-local; the URL is the
+    // stable trigger and adding the function would rerun this every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeFanwikiParam]);
+
   // Which text field a FileBrowserModal invocation is currently filling in --
   // one shared modal instance reused across every "Browse..." button on this
   // page (zim path, fanwiki xml path, fanwiki images dir) rather than one
@@ -288,10 +314,9 @@ export default function Home() {
     setFanwikiProgressMsg('Iniciando importación…');
     setFanwikiProgressPercent(0);
     try {
-      const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-      const wsBaseUrl = serverBaseUrl.replace(/^https/, 'wss').replace(/^http/, 'ws');
+      const importWebSocketUrl = await getBackendWebSocketUrl('/ws/fanwiki/import');
       const result = await new Promise<{ start_url: string; page_count: number; image_count: number; links_resolved: number }>((resolve, reject) => {
-        const ws = new WebSocket(`${wsBaseUrl}/ws/fanwiki/import`);
+        const ws = new WebSocket(importWebSocketUrl);
         ws.onopen = () => {
           ws.send(JSON.stringify({
             path,
@@ -332,6 +357,7 @@ export default function Home() {
       );
       setPendingFanwikiStartUrl(result.start_url);
       setDetectedInputType('fanwiki');
+      setProjectsListKey((k) => k + 1);
       setIsFanwikiModalOpen(false);
       setIsConfigModalOpen(true);
     } catch (e: unknown) {
@@ -349,7 +375,6 @@ export default function Home() {
   const [zimDropDir, setZimDropDir] = useState<string | null>(null);
   const [isRescanningZim, setIsRescanningZim] = useState(false);
   const [rescanMessage, setRescanMessage] = useState<string | null>(null);
-  const [projectsListKey, setProjectsListKey] = useState(0);
 
   useEffect(() => {
     fetch('/api/zim/drop_dir')
@@ -614,7 +639,7 @@ export default function Home() {
     }
 
     try {
-      const currentRepoUrl = repositoryInput.trim();
+      const currentRepoUrl = pendingFanwikiStartUrl || repositoryInput.trim();
       if (currentRepoUrl) {
         const existingConfigs = JSON.parse(localStorage.getItem(REPO_CONFIG_CACHE_KEY) || '{}');
         const configToSave = {
@@ -1110,7 +1135,11 @@ export default function Home() {
           {/* Configuration Modal */}
           <ConfigurationModal
             isOpen={isConfigModalOpen}
-            onClose={() => setIsConfigModalOpen(false)}
+            onClose={() => {
+              setIsConfigModalOpen(false);
+              setPendingFanwikiStartUrl(null);
+              setIsSubmitting(false);
+            }}
             repositoryInput={repositoryInput}
             selectedLanguage={selectedLanguage}
             setSelectedLanguage={setSelectedLanguage}

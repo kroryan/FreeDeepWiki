@@ -29,7 +29,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import BinaryIO, Callable, Dict, List, Optional, Set
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
 import mwparserfromhell
 
@@ -459,7 +459,12 @@ def import_dump(
             # converting the wikitext, since the conversion needs to know
             # how many "../" bring it back to local_dir/_images/.
             crawl_page = CrawlPage(
-                url=start_url.rstrip("/") + page_path,
+                # <siteinfo><base> is normally a page URL such as
+                # https://eve.fandom.com/wiki/Main_Page, not the site root.
+                # Concatenating "/wiki/Title" produced
+                # .../Main_Page/wiki/Title. urljoin handles both page bases
+                # and plain origins correctly.
+                url=urljoin(start_url.rstrip("/") + "/", page_path),
                 path=page_path,
                 title=title,
                 markdown="",
@@ -511,7 +516,16 @@ def import_dump(
     finally:
         fh.close()
 
-    write_site_meta(local_dir, start_url, manifest)
+    write_site_meta(
+        local_dir,
+        start_url,
+        manifest,
+        {
+            "source_type": "fanwiki",
+            "wiki_name": dump_info.sitename,
+            "dbname": dump_info.dbname,
+        },
+    )
     logger.info("Imported %d page(s) (%d image(s)) from fanwiki dump %s into %s",
                 pages_done, len(copied_images), path, local_dir)
 

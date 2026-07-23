@@ -19,6 +19,7 @@ _REQUIRED_IMPORTS = [
     "tiktoken", "tiktoken_ext", "websockets", "azure.identity", "azure.core",
     "boto3", "botocore", "requests", "jinja2", "aiohttp", "langid", "numpy",
     "openai", "ollama", "faiss", "libzim",
+    "mwparserfromhell", "playwright", "bs4", "markdownify", "neo4j",
 ]
 _missing = [m for m in _REQUIRED_IMPORTS if importlib.util.find_spec(m) is None]
 if _missing:
@@ -91,7 +92,11 @@ packages_to_collect = [
     'openai',
     'ollama',
     'faiss',
-    'libzim'
+    'libzim',
+    'mwparserfromhell',
+    'playwright',
+    'bs4',
+    'markdownify',
 ]
 
 hidden_imports = []
@@ -104,7 +109,7 @@ for pkg in packages_to_collect:
         print(f"Warning: Could not collect submodules for {pkg}: {e}")
 
 # Collect data files if needed
-for pkg in ['adalflow', 'langid']:
+for pkg in ['adalflow', 'langid', 'playwright']:
     try:
         datas.extend(collect_data_files(pkg))
     except Exception as e:

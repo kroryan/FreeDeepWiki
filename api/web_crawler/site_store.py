@@ -32,7 +32,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
 from api.data_root import get_data_root
@@ -114,7 +114,12 @@ def write_page(local_dir: str, page: CrawlPage) -> str:
     return relpath.replace(os.sep, "/")
 
 
-def write_site_meta(local_dir: str, start_url: str, pages: List[Dict]) -> None:
+def write_site_meta(
+    local_dir: str,
+    start_url: str,
+    pages: List[Dict],
+    source_metadata: Optional[Dict[str, Any]] = None,
+) -> None:
     """Write the crawl manifest used by wiki generation to know, per file,
     whether it was flagged as likely user content -- without re-parsing every
     Markdown file's front matter for that one boolean."""
@@ -124,6 +129,12 @@ def write_site_meta(local_dir: str, start_url: str, pages: List[Dict]) -> None:
         "page_count": len(pages),
         "pages": pages,  # [{relpath, url, title, likely_user_content}, ...]
     }
+    # Callers may persist source-specific identity alongside the common
+    # website-shaped manifest.  In particular, MediaWiki XML imports need a
+    # durable marker so they remain discoverable before an LLM-generated wiki
+    # cache exists (and after the browser is refreshed).
+    if source_metadata:
+        meta.update(source_metadata)
     with open(os.path.join(local_dir, _SITE_META_FILENAME), "w", encoding="utf-8") as fh:
         json.dump(meta, fh, ensure_ascii=False, indent=2)
 

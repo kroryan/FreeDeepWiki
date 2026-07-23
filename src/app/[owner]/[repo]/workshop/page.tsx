@@ -9,6 +9,7 @@ import Markdown from '@/components/Markdown';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { RepoInfo } from '@/types/repoinfo';
 import getRepoUrl from '@/utils/getRepoUrl';
+import { getBackendWebSocketUrl } from '@/utils/backendUrl';
 import { WEBSOCKET_CONNECT_TIMEOUT_MS } from '@/utils/timeouts';
 import { StreamParser } from '@/utils/streamParser';
 
@@ -344,10 +345,7 @@ Make the workshop content in ${language === 'en' ? 'English' :
       let content = '';
 
       try {
-        // Create WebSocket URL from the server base URL
-        const serverBaseUrl = process.env.SERVER_BASE_URL || 'http://localhost:8001';
-        const wsBaseUrl = serverBaseUrl.replace(/^http/, 'ws')? serverBaseUrl.replace(/^https/, 'wss'): serverBaseUrl.replace(/^http/, 'ws');
-        const wsUrl = `${wsBaseUrl}/ws/chat`;
+        const wsUrl = await getBackendWebSocketUrl('/ws/chat');
 
         // Create a new WebSocket connection
         const ws = new WebSocket(wsUrl);

@@ -8,9 +8,12 @@ interface ProcessedProject {
   repo_type: string;
   submittedAt: number;
   language: string;
+  status?: 'generated' | 'imported';
+  start_url?: string | null;
+  page_count?: number | null;
 }
 
-export function useProcessedProjects() {
+export function useProcessedProjects(refreshKey: number = 0) {
   const [projects, setProjects] = useState<ProcessedProject[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +43,7 @@ export function useProcessedProjects() {
     };
 
     fetchProjects();
-  }, []);
+  }, [refreshKey]);
 
   return { projects, isLoading, error };
 }

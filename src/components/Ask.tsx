@@ -544,7 +544,7 @@ const Ask: React.FC<AskProps> = ({
       const streamParser = new StreamParser();
 
       // Create a new WebSocket connection
-      webSocketRef.current = createChatWebSocket(
+      webSocketRef.current = await createChatWebSocket(
         requestBody,
         // Message handler
         (message: string) => {
@@ -826,7 +826,7 @@ const Ask: React.FC<AskProps> = ({
 
       // Create a new WebSocket connection
       let usedHttpFallback = false;
-      webSocketRef.current = createChatWebSocket(
+      webSocketRef.current = await createChatWebSocket(
         requestBody,
         // Message handler
         (message: string) => {

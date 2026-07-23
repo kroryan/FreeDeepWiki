@@ -1,5 +1,6 @@
 import logging
 import os
+import tempfile
 from pathlib import Path
 from logging.handlers import RotatingFileHandler
 
@@ -15,7 +16,7 @@ def setup_logging(format: str = None):
 
     Environment variables:
         LOG_LEVEL: Log level (default: INFO)
-        LOG_FILE_PATH: Path to log file (default: logs/application.log)
+        LOG_FILE_PATH: Path to log file (default: <data root>/logs/application.log)
         LOG_MAX_SIZE: Max size in MB before rotating (default: 10MB)
         LOG_BACKUP_COUNT: Number of backup files to keep (default: 5)
 
@@ -23,9 +24,11 @@ def setup_logging(format: str = None):
     both rotating file and console handlers.
     """
     # Determine log directory and default file path
-    base_dir = Path(__file__).parent
-    log_dir = base_dir / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from api.data_root import get_data_root
+        log_dir = Path(get_data_root()) / "logs"
+    except Exception:
+        log_dir = Path(tempfile.gettempdir()) / "hackdeepwiki-logs"
     default_log_file = log_dir / "application.log"
 
     # Get log level from environment
@@ -35,14 +38,12 @@ def setup_logging(format: str = None):
     # Get log file path
     log_file_path = Path(os.environ.get("LOG_FILE_PATH", str(default_log_file)))
 
-    # Secure path check: must be inside logs/ directory (bypassed if LOG_FILE_PATH is explicitly set in environment)
+    # Secure path check: must be inside logs/ directory (bypassed if
+    # LOG_FILE_PATH is explicitly set in environment).
     log_dir_resolved = log_dir.resolve()
     resolved_path = log_file_path.resolve()
     if "LOG_FILE_PATH" not in os.environ and not str(resolved_path).startswith(str(log_dir_resolved) + os.sep):
         raise ValueError(f"LOG_FILE_PATH '{log_file_path}' is outside the trusted log directory '{log_dir_resolved}'")
-
-    # Ensure parent directories exist
-    resolved_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Get max log file size (default: 10MB)
     try:
@@ -61,20 +62,41 @@ def setup_logging(format: str = None):
     log_format = format or "%(asctime)s - %(levelname)s - %(name)s - %(filename)s:%(lineno)d - %(message)s"
 
     # Create handlers
-    file_handler = RotatingFileHandler(resolved_path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
     console_handler = logging.StreamHandler()
+    handlers: list[logging.Handler] = [console_handler]
+    try:
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = RotatingFileHandler(
+            resolved_path,
+            maxBytes=max_bytes,
+            backupCount=backup_count,
+            encoding="utf-8",
+        )
+        handlers.insert(0, file_handler)
+    except OSError as exc:
+        # Logging must never make the API unstartable. This also recovers
+        # cleanly from older Docker/root runs that left api/logs owned by a
+        # different user.
+        file_handler = None
+        print(
+            f"Warning: cannot open log file '{resolved_path}': {exc}. "
+            "Continuing with console logging.",
+            file=os.sys.stderr,
+        )
 
     # Set format for both handlers
     formatter = logging.Formatter(log_format)
-    file_handler.setFormatter(formatter)
+    if file_handler is not None:
+        file_handler.setFormatter(formatter)
     console_handler.setFormatter(formatter)
 
     # Add filter to suppress "Detected file change" messages
-    file_handler.addFilter(IgnoreLogChangeDetectedFilter())
+    if file_handler is not None:
+        file_handler.addFilter(IgnoreLogChangeDetectedFilter())
     console_handler.addFilter(IgnoreLogChangeDetectedFilter())
 
     # Apply logging configuration
-    logging.basicConfig(level=log_level, handlers=[file_handler, console_handler], force=True)
+    logging.basicConfig(level=log_level, handlers=handlers, force=True)
 
     # Log configuration info
     logger = logging.getLogger(__name__)

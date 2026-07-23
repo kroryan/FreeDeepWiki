@@ -9,6 +9,7 @@ import sys
 import logging
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import pytest
 
 # Add the project root to the Python path
 project_root = Path(__file__).parent.parent.parent
@@ -151,7 +152,8 @@ class TestEmbedderFactory:
         from api.tools.embedder import get_embedder
         
         # Test Google embedder
-        google_embedder = get_embedder(embedder_type='google')
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "test-key"}):
+            google_embedder = get_embedder(embedder_type='google')
         assert google_embedder is not None, "Google embedder should be created"
 
         # Test Bedrock embedder (mock boto3 to avoid hitting AWS credential providers)
@@ -178,7 +180,8 @@ class TestEmbedderFactory:
         from api.tools.embedder import get_embedder
         
         # Test with use_google_embedder=True
-        google_embedder = get_embedder(use_google_embedder=True)
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "test-key"}):
+            google_embedder = get_embedder(use_google_embedder=True)
         assert google_embedder is not None, "Google embedder should be created with use_google_embedder=True"
         
         # Test with is_local_ollama=True
@@ -193,7 +196,8 @@ class TestEmbedderFactory:
         from api.tools.embedder import get_embedder
         
         # Test auto-detection (should use current configuration)
-        embedder = get_embedder()
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "test-key"}):
+            embedder = get_embedder()
         assert embedder is not None, "Auto-detected embedder should be created"
 
 
@@ -202,9 +206,8 @@ class TestEmbedderClients:
 
     def test_google_embedder_client(self):
         """Test Google embedder client directly."""
-        if not os.getenv('GOOGLE_API_KEY'):
-            logger.warning("Skipping Google embedder test - GOOGLE_API_KEY not available")
-            return
+        if os.getenv("RUN_NETWORK_TESTS") != "1" or not os.getenv("GOOGLE_API_KEY"):
+            pytest.skip("Set RUN_NETWORK_TESTS=1 and GOOGLE_API_KEY to run live Google tests")
             
         from api.google_embedder_client import GoogleEmbedderClient
         from adalflow.core.types import ModelType
@@ -229,9 +232,8 @@ class TestEmbedderClients:
 
     def test_openai_embedder_via_adalflow(self):
         """Test OpenAI embedder through AdalFlow."""
-        if not os.getenv('OPENAI_API_KEY'):
-            logger.warning("Skipping OpenAI embedder test - OPENAI_API_KEY not available")
-            return
+        if os.getenv("RUN_NETWORK_TESTS") != "1" or not os.getenv("OPENAI_API_KEY"):
+            pytest.skip("Set RUN_NETWORK_TESTS=1 and OPENAI_API_KEY to run live OpenAI tests")
             
         import adalflow as adal
         from api.openai_client import OpenAIClient
