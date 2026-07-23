@@ -1821,6 +1821,60 @@ async def ws_website_crawl(websocket: WebSocket):
             pass
 
 
+@app.get("/api/fs/list")
+async def fs_list(
+    path: Optional[str] = Query(None, description="Absolute directory to list; defaults to the user's home directory"),
+    extensions: Optional[str] = Query(None, description="Comma-separated file extensions to include (e.g. '.xml'); omit to list every file"),
+):
+    """Lists one local directory's contents -- a generic, reusable "browse
+    the filesystem" endpoint (not specific to fanwiki) so any picker in the
+    app (the fanwiki XML file, the images folder, ...) can offer real
+    navigation instead of requiring the user to type an absolute path from
+    memory, the same way a native "Open File" dialog would. No sandboxing
+    beyond what every other local-path field in this app already has (repo
+    clone dir, ZIM import, local repo path, ...): this is a local desktop
+    app operating on the user's own machine, not a multi-tenant server.
+    """
+    target = path or os.path.expanduser("~")
+    target = os.path.abspath(target)
+    if not os.path.isdir(target):
+        raise HTTPException(status_code=400, detail=f"Not a directory: {target}")
+
+    ext_filter = None
+    if extensions:
+        ext_filter = {e.strip().lower() for e in extensions.split(",") if e.strip()}
+
+    entries = []
+    try:
+        with os.scandir(target) as it:
+            for entry in it:
+                if entry.name.startswith('.'):
+                    continue
+                try:
+                    is_dir = entry.is_dir(follow_symlinks=True)
+                except OSError:
+                    continue
+                if not is_dir and ext_filter:
+                    _, ext = os.path.splitext(entry.name)
+                    if ext.lower() not in ext_filter:
+                        continue
+                size = None
+                if not is_dir:
+                    try:
+                        size = entry.stat().st_size
+                    except OSError:
+                        pass
+                entries.append({"name": entry.name, "is_dir": is_dir, "size": size})
+    except PermissionError:
+        raise HTTPException(status_code=403, detail=f"Permission denied: {target}")
+
+    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
+    root = os.path.abspath(os.sep)
+    parent = None if target == root else (os.path.dirname(target) or root)
+
+    return {"path": target, "parent": parent, "entries": entries}
+
+
 class FanwikiInspectRequest(BaseModel):
     path: str = Field(..., description="Local path to a MediaWiki XML export (Special:Export) file")
 
@@ -1983,6 +2037,38 @@ async def fanwiki_repair_links(request: FanwikiRepairLinksRequest):
         "files_scanned": result.files_scanned,
         "links_resolved": result.links_resolved,
         "links_unresolved": result.links_unresolved,
+    }
+
+
+class FanwikiAttachImagesRequest(BaseModel):
+    start_url: str = Field(..., description="The fanwiki's synthetic start URL, as returned by /ws/fanwiki/import")
+    images_dir: str = Field(..., description="Local folder of images to match against unresolved [[File:...]] references")
+
+
+@app.post("/api/fanwiki/attach_images")
+async def fanwiki_attach_images(request: FanwikiAttachImagesRequest):
+    """Attaches images to an already-imported fanwiki after the fact (see
+    api.fanwiki_import.attach_images) -- the images folder doesn't need to
+    exist, or be complete, at import time; the user can come back and
+    supply it, or a better one, whenever they have it, without re-importing
+    the XML dump."""
+    from api.web_crawler.site_store import website_local_dir
+    from api.fanwiki_import import attach_images
+
+    local_dir = website_local_dir(request.start_url)
+    if not os.path.isdir(local_dir):
+        raise HTTPException(status_code=404, detail=f"No imported fanwiki found for {request.start_url}")
+    if not os.path.isdir(request.images_dir):
+        raise HTTPException(status_code=400, detail=f"Images folder not found: {request.images_dir}")
+    try:
+        result = await asyncio.to_thread(attach_images, local_dir, request.images_dir)
+    except Exception as e:
+        logger.error(f"Error attaching images for {request.start_url}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "files_scanned": result.files_scanned,
+        "images_attached": result.images_attached,
+        "images_still_missing": result.images_still_missing,
     }
 
 

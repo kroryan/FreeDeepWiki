@@ -293,9 +293,15 @@ def wikitext_to_markdown(
                 rel = f"{images_relprefix}{dest_filename}" if images_relprefix else dest_filename
                 code.replace(link, f"![{alt}]({rel})")
             else:
-                # No matching file supplied -- keep the fact that an image
-                # belongs here instead of silently vanishing.
-                code.replace(link, f"*(imagen no disponible: {caption or filename})*")
+                # No matching file supplied (yet -- see attach_images below,
+                # which lets the user provide an images folder later without
+                # re-importing the whole dump). Filename always comes first
+                # and is never dropped in favor of the caption, unlike the
+                # matched-image alt text above: attach_images needs the
+                # original filename intact to find and embed it later, and
+                # this exact "imagen no disponible: {filename}|{caption}"
+                # shape is what its regex looks for.
+                code.replace(link, f"*(imagen no disponible: {filename}|{caption})*")
         except ValueError:
             pass
 
@@ -732,3 +738,103 @@ def export_mediawiki_xml(
         text_el.text = _markdown_to_wikitext(page.content or "")
 
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+# Matches the exact placeholder wikitext_to_markdown emits for an
+# unmatched [[File:...]]/[[Image:...]] reference -- see the comment at its
+# call site for why the filename is always kept intact there.
+_MISSING_IMAGE_RE = re.compile(r'\*\(imagen no disponible: ([^|)]+)\|([^)]*)\)\*')
+
+
+@dataclass
+class ImageAttachResult:
+    files_scanned: int
+    images_attached: int
+    images_still_missing: int
+
+
+def attach_images(
+    local_dir: str,
+    images_dir: str,
+    on_progress: Optional[Callable[[str], None]] = None,
+) -> ImageAttachResult:
+    """Attach images to an *already-imported* fanwiki after the fact, without
+    re-importing the XML dump at all -- the images folder doesn't have to
+    exist (or be complete) at import time; the user can come back and supply
+    it -- or a better/more complete one -- whenever they have it.
+
+    Scans every imported page for the "imagen no disponible: filename|caption"
+    placeholder wikitext_to_markdown leaves for a [[File:...]]/[[Image:...]]
+    reference it couldn't resolve, matches each filename against
+    ``images_dir`` (same MediaWiki filename-normalization rule as at import
+    time -- see build_image_index/mediawiki_filename_key), copies newly
+    matched files into local_dir/_images/ (the app's own portable DATABASE
+    tree, same as at import time), and replaces the placeholder with a real
+    Markdown image embed. A filename still not found in images_dir is left
+    as the same placeholder, so this is always safe to re-run later with a
+    more complete folder -- already-attached images simply aren't matched by
+    the placeholder regex again.
+    """
+    image_index = build_image_index(images_dir)
+    images_dest_dir = os.path.join(local_dir, "_images")
+    copied_images: Dict[str, str] = {}
+
+    files_scanned = 0
+    attached = 0
+    still_missing = 0
+
+    for root, _dirs, files in os.walk(local_dir):
+        for fname in files:
+            if not fname.endswith(".md"):
+                continue
+            full_path = os.path.join(root, fname)
+            own_relpath = os.path.relpath(full_path, local_dir).replace(os.sep, "/")
+            try:
+                with open(full_path, "r", encoding="utf-8") as fh:
+                    content = fh.read()
+            except OSError:
+                continue
+
+            if "imagen no disponible" not in content:
+                continue
+
+            images_relprefix = "../" * own_relpath.count("/")
+
+            def _resolve(m: "re.Match") -> str:
+                nonlocal attached, still_missing
+                filename, caption = m.group(1).strip(), m.group(2).strip()
+                source_path = image_index.get(mediawiki_filename_key(filename))
+                if not source_path:
+                    still_missing += 1
+                    return m.group(0)
+                dest_filename = os.path.basename(source_path)
+                if dest_filename not in copied_images:
+                    os.makedirs(images_dest_dir, exist_ok=True)
+                    try:
+                        shutil.copy2(source_path, os.path.join(images_dest_dir, dest_filename))
+                    except OSError as exc:
+                        logger.warning("Could not copy image %s: %s", source_path, exc)
+                        still_missing += 1
+                        return m.group(0)
+                    copied_images[dest_filename] = source_path
+                attached += 1
+                alt = caption or filename
+                rel = f"{images_relprefix}{dest_filename}" if images_relprefix else dest_filename
+                return f"![{alt}]({rel})"
+
+            new_content = _MISSING_IMAGE_RE.sub(_resolve, content)
+            files_scanned += 1
+            if new_content != content:
+                with open(full_path, "w", encoding="utf-8") as fh:
+                    fh.write(new_content)
+
+            if on_progress and files_scanned % 200 == 0:
+                on_progress(f"Adjuntando imágenes… {files_scanned} página(s) revisadas")
+
+    logger.info("Image attach for %s: %d file(s) scanned, %d image(s) attached, %d still missing",
+                local_dir, files_scanned, attached, still_missing)
+    return ImageAttachResult(
+        files_scanned=files_scanned,
+        images_attached=attached,
+        images_still_missing=still_missing,
+    )
