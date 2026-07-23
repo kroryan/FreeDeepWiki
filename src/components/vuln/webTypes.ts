@@ -2,7 +2,7 @@
 // website security report streamed back from /ws/web_vuln_scan and stored
 // in wikicache (hackdeepwiki_webvulns_*.json).
 
-import { GraphData, RemediationPlan } from './types';
+import { ExploitationPlan, GraphData, RemediationPlan } from './types';
 
 export type WebSeverity = 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
 export type WebFindingCategory = 'headers' | 'cookies' | 'tls' | 'exposure' | 'cve';
@@ -25,6 +25,10 @@ export interface WebFinding {
   ai_dismissed: boolean;
   ai_dismiss_reason: string;
   ai_notes: string;
+  // Same trio as CVEFinding, so both scan types share one exploitation UI.
+  ai_exploitability: string; // exhaustive attacker-perspective description
+  ai_exploit_vector: string; // short attack path/prerequisites
+  ai_exploit_plan: string; // concrete numbered steps an attacker would follow
 }
 
 export interface DetectedTechnology {
@@ -51,6 +55,7 @@ export interface WebVulnReport {
   detected_technologies: DetectedTechnology[];
   ai_analyzed: boolean;
   remediation_plan?: RemediationPlan;
+  exploitation_plan?: ExploitationPlan;
   graph: GraphData;
   deep_scan_ran?: boolean;
 }

@@ -112,6 +112,24 @@ export default function WebFindingDetailDrawer({ finding, onClose }: Props) {
             </Field>
           )}
 
+          {finding.ai_exploit_vector && (
+            <Field label="🎯 Attack vector">{finding.ai_exploit_vector}</Field>
+          )}
+
+          {finding.ai_exploitability && (
+            <Field label="⚔️ Exploitability">
+              <span className="whitespace-pre-wrap">{finding.ai_exploitability}</span>
+            </Field>
+          )}
+
+          {finding.ai_exploit_plan && (
+            <Field label="🗺️ Exploitation plan">
+              <pre className="whitespace-pre-wrap break-words text-xs font-mono text-[var(--foreground)]/80 bg-[var(--background)]/50 p-2 rounded">
+                {finding.ai_exploit_plan}
+              </pre>
+            </Field>
+          )}
+
           {finding.remediation && (
             <Field label="🛠️ Remediation">{finding.remediation}</Field>
           )}

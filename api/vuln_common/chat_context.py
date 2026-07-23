@@ -64,6 +64,10 @@ def build_dependency_section(report: Dict[str, Any]) -> str:
     if plan.get("summary"):
         lines.append(f"\n### Suggested Solutions summary:\n{_truncate(plan['summary'], 500)}")
 
+    exploit_plan = report.get("exploitation_plan") or {}
+    if exploit_plan.get("summary"):
+        lines.append(f"\n### Exploitation Playbook summary:\n{_truncate(exploit_plan['summary'], 500)}")
+
     return "\n".join(lines)
 
 
@@ -99,6 +103,10 @@ def build_website_section(report: Dict[str, Any]) -> str:
     plan = report.get("remediation_plan") or {}
     if plan.get("summary"):
         lines.append(f"\n### Suggested Solutions summary:\n{_truncate(plan['summary'], 500)}")
+
+    exploit_plan = report.get("exploitation_plan") or {}
+    if exploit_plan.get("summary"):
+        lines.append(f"\n### Exploitation Playbook summary:\n{_truncate(exploit_plan['summary'], 500)}")
 
     return "\n".join(lines)
 

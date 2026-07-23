@@ -24,7 +24,9 @@ export interface CVEFinding {
   usage_files: string[];
   // LLM-generated
   ai_impact_analysis: string;
-  ai_exploitability: string;
+  ai_exploitability: string; // exhaustive attacker-perspective description
+  ai_exploit_vector: string; // short attack path/prerequisites
+  ai_exploit_plan: string; // concrete numbered steps an attacker would follow
   ai_remediation: string;
   ai_priority: number; // 1-5
 }
@@ -85,6 +87,25 @@ export interface RemediationPlan {
   total_findings_covered: number;
 }
 
+// Mirrors api/vuln_common/exploitation.py -- the attacker's-perspective
+// mirror of RemediationPlan/RemediationStep: same shape, but `scenario`
+// explains how a finding would actually be exploited instead of how to fix
+// it. Shared by every scan type (dependency/web/code), same as Remediation.
+export interface ExploitationStep {
+  scenario: string;
+  severity: Severity | 'INFO';
+  finding_ids: string[];
+  finding_titles: string[];
+  category: string;
+  affected_count: number;
+}
+
+export interface ExploitationPlan {
+  steps: ExploitationStep[];
+  summary: string;
+  total_findings_covered: number;
+}
+
 export interface VulnReport {
   repo_url: string;
   repo_type: string;
@@ -107,6 +128,7 @@ export interface VulnReport {
   code_scan_findings?: CVEFinding[] | Record<string, unknown>[];
   code_scan_ran?: boolean;
   remediation_plan?: RemediationPlan;
+  exploitation_plan?: ExploitationPlan;
 }
 
 export type VulnScanStatus = 'idle' | 'running' | 'done' | 'error';

@@ -77,17 +77,19 @@ def build_analysis_prompt(
 ## Task
 For EACH CVE above, produce an analysis tailored to THIS application. Consider:
 - Impact: how does this CVE concretely affect this app given the listed files where the dependency is used? Is the vulnerable function/feature likely reachable?
-- Exploitability: how easy is it to exploit in THIS app's context? Does it require network access, user interaction, authentication, or a specific configuration?
+- Exploitability: an exhaustive, concrete description of how an attacker would actually abuse this CVE in THIS app's context (not the generic advisory summary). Does it require network access, user interaction, authentication, or a specific configuration? What does the attacker gain?
+- Exploit vector: ONE short line naming the attack path and prerequisites (e.g. "Remote, unauthenticated" / "Requires an authenticated low-privilege session" / "Local access + ability to write a crafted file" / "Requires user interaction (phishing/social engineering)").
+- Exploit plan: a concrete, NUMBERED, step-by-step sequence of what an attacker would actually do to exploit this CVE in THIS application end to end (recon -> trigger -> impact). Reference the actual usage files/context above where possible instead of generic advisory boilerplate.
 - Remediation: concrete steps to fix. If a fixed version exists, name the exact upgrade target and the command. Add config/workaround if relevant.
 - Priority: an integer 1-5 (5 = fix immediately) based on severity AND real-world exploitability in this app.
 
 ## Output format
 Respond with ONLY a JSON array (no markdown fences, no prose). One object per CVE, in the same order, each with exactly these string fields and an integer priority:
 [
-  {{"id": "{findings[0].id if findings else ''}", "impact": "...", "exploitability": "...", "remediation": "...", "priority": 4}}
+  {{"id": "{findings[0].id if findings else ''}", "impact": "...", "exploitability": "...", "exploit_vector": "...", "exploit_plan": "1. ...\\n2. ...\\n3. ...", "remediation": "...", "priority": 4}}
 ]
 
-Write the impact / exploitability / remediation text in {lang}. Keep each field concise (2-5 sentences).
+Write the impact / exploitability / exploit_vector / exploit_plan / remediation text in {lang}. Keep impact/exploitability/remediation concise (2-5 sentences); exploit_vector is a single short line; exploit_plan is a numbered list of concrete steps.
 """
 
 

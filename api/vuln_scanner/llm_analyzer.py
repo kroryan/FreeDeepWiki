@@ -69,6 +69,21 @@ def _apply_defaults(findings: List[CVEFinding]) -> None:
                 "Not individually assessed for this codebase. Refer to the "
                 "CVSS vector and references to gauge exploitability."
             )
+        if not f.ai_exploit_vector:
+            f.ai_exploit_vector = (
+                "Not individually assessed for this codebase — refer to the "
+                "CVSS vector (AV/AC/PR/UI) in the advisory for the attack "
+                "path and prerequisites."
+            )
+        if not f.ai_exploit_plan:
+            f.ai_exploit_plan = (
+                f"1. Confirm {f.package_name}@{f.installed_version} is reachable in a running "
+                f"deployment of this app.\n"
+                f"2. Read the advisory ({f.id}) and any public proof-of-concept/exploit-db entry "
+                f"for the exact trigger conditions.\n"
+                f"3. Reproduce the trigger against this app's usage of the package and confirm "
+                f"impact before treating this as exploitable in practice."
+            )
         if not f.ai_priority:
             f.ai_priority = _DEFAULT_PRIORITY.get(f.severity, 1)
 
@@ -123,6 +138,8 @@ def _merge_llm_result(findings: List[CVEFinding], parsed) -> int:
             continue
         impact = obj.get("impact")
         exploit = obj.get("exploitability")
+        vector = obj.get("exploit_vector")
+        plan = obj.get("exploit_plan")
         rem = obj.get("remediation")
         prio = obj.get("priority")
         if isinstance(impact, str) and impact.strip():
@@ -130,6 +147,10 @@ def _merge_llm_result(findings: List[CVEFinding], parsed) -> int:
             updated += 1
         if isinstance(exploit, str) and exploit.strip():
             f.ai_exploitability = exploit.strip()
+        if isinstance(vector, str) and vector.strip():
+            f.ai_exploit_vector = vector.strip()
+        if isinstance(plan, str) and plan.strip():
+            f.ai_exploit_plan = plan.strip()
         if isinstance(rem, str) and rem.strip():
             f.ai_remediation = rem.strip()
         if isinstance(prio, (int, float)) and 1 <= int(prio) <= 5:

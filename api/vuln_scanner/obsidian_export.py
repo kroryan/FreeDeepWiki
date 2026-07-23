@@ -69,9 +69,17 @@ def _md_finding(f: Dict[str, Any]) -> str:
         lines.append("### 📊 Impact analysis")
         lines.append(f["ai_impact_analysis"])
         lines.append("")
+    if f.get("ai_exploit_vector"):
+        lines.append("### 🎯 Attack vector")
+        lines.append(f["ai_exploit_vector"])
+        lines.append("")
     if f.get("ai_exploitability"):
         lines.append("### ⚔️ Exploitability")
         lines.append(f["ai_exploitability"])
+        lines.append("")
+    if f.get("ai_exploit_plan"):
+        lines.append("### 🗺️ Exploitation plan")
+        lines.append(f["ai_exploit_plan"])
         lines.append("")
     if f.get("ai_remediation"):
         lines.append("### 🛠️ Remediation")

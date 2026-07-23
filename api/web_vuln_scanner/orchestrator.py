@@ -253,6 +253,24 @@ async def run_web_vuln_scan(
         except Exception as exc:  # noqa: BLE001
             logger.warning("Web vuln AI cross-check failed (non-fatal): %s", exc)
 
+    # Deterministic exploitation defaults FIRST (coherent report even with no
+    # LLM), then let a real per-finding LLM analysis overwrite them with
+    # something more specific to this exact scan.
+    from api.web_vuln_scanner.exploitation_defaults import apply_exploitation_defaults
+    apply_exploitation_defaults(findings)
+
+    if run_llm and findings:
+        await _p("Analysing exploitation scenarios for each finding…", 85)
+        try:
+            from api.web_vuln_scanner.exploitation_llm import analyze_web_exploitation
+            await analyze_web_exploitation(
+                findings, provider=provider, model=model, api_key=api_key,
+                api_endpoint=api_endpoint, language=language,
+                on_progress=lambda msg: _p(msg, 88),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Web exploitation LLM analysis failed (non-fatal): %s", exc)
+
     await _p("Building report…", 95)
     report = _build_report(
         site_url=site_url, owner=owner, repo=repo, language=language,
@@ -263,6 +281,9 @@ async def run_web_vuln_scan(
 
     from api.vuln_common.remediation import build_remediation_plan
     report.remediation_plan = build_remediation_plan([f.to_dict() for f in findings]).to_dict()
+
+    from api.vuln_common.exploitation import build_exploitation_plan
+    report.exploitation_plan = build_exploitation_plan([f.to_dict() for f in findings]).to_dict()
 
     from api.web_vuln_scanner.models import build_web_graph
     report.graph = build_web_graph(findings, sorted(technologies), site_url).to_dict()

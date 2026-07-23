@@ -94,7 +94,9 @@ class CVEFinding:
     usage_files: List[str] = field(default_factory=list)
     # LLM-generated fields
     ai_impact_analysis: str = ""
-    ai_exploitability: str = ""
+    ai_exploitability: str = ""  # exhaustive attacker-perspective description
+    ai_exploit_vector: str = ""  # short attack path/prerequisites, e.g. "remote, unauthenticated"
+    ai_exploit_plan: str = ""  # concrete numbered steps an attacker would follow, tailored to this app
     ai_remediation: str = ""
     ai_priority: int = 0  # 1-5
 
@@ -190,6 +192,10 @@ class VulnReport:
     # api.vuln_common.remediation.build_remediation_plan. Every scan type
     # (dependency/web/code) produces one of these.
     remediation_plan: Dict[str, Any] = field(default_factory=dict)
+    # Consolidated, prioritized "Exploitation Playbook" page (attacker's-
+    # perspective mirror of remediation_plan) -- see
+    # api.vuln_common.exploitation.build_exploitation_plan.
+    exploitation_plan: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

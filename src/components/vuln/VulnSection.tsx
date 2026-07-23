@@ -12,6 +12,7 @@ import VulnFindingCard from './VulnFindingCard';
 import VulnDetailDrawer from './VulnDetailDrawer';
 import VulnGraph3D from './VulnGraph3D';
 import VulnRemediationPlan from './VulnRemediationPlan';
+import VulnExploitationPlan, { ExploitationItem } from './VulnExploitationPlan';
 import ScanReleaseSelector from './ScanReleaseSelector';
 
 interface Props {
@@ -27,7 +28,7 @@ interface Props {
   onDeleteVersion?: (version: number) => void;
 }
 
-type Tab = 'client' | 'server' | 'dependencies' | 'graph' | 'solutions';
+type Tab = 'client' | 'server' | 'dependencies' | 'graph' | 'solutions' | 'exploitation';
 
 export default function VulnSection({
   report, status, progressMessage, progressPercent, errorMessage, onRetry,
@@ -44,6 +45,7 @@ export default function VulnSection({
     if (report.dependency_findings.length) t.push('dependencies');
     t.push('graph');
     if (report.remediation_plan?.steps?.length) t.push('solutions');
+    if (report.all_findings.some((f) => f.ai_exploitability)) t.push('exploitation');
     return t;
   }, [report]);
 
@@ -150,6 +152,19 @@ export default function VulnSection({
         />
       ) : activeTab === 'solutions' ? (
         <VulnRemediationPlan plan={report.remediation_plan} />
+      ) : activeTab === 'exploitation' ? (
+        <VulnExploitationPlan
+          items={report.all_findings.map((f): ExploitationItem => ({
+            id: f.id,
+            title: `${f.id} — ${f.package_name}@${f.installed_version}`,
+            severity: f.severity,
+            category: f.category,
+            vector: f.ai_exploit_vector,
+            description: f.ai_exploitability,
+            plan: f.ai_exploit_plan,
+          }))}
+          summary={report.exploitation_plan?.summary}
+        />
       ) : findings.length === 0 ? (
         <div className="p-6 rounded-md border border-[var(--border-color)] bg-[var(--card-bg)] text-sm text-[var(--muted)]">
           No vulnerabilities in this category. 🎉
@@ -174,6 +189,7 @@ function tabLabel(t: Tab, report: VulnReport): string {
     case 'dependencies': return `📦 Dependencies (${report.dependency_findings.length})`;
     case 'graph': return `🕸️ Graph`;
     case 'solutions': return `🛠️ Solutions`;
+    case 'exploitation': return `⚔️ Exploitation`;
   }
 }
 

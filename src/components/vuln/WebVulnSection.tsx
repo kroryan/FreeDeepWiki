@@ -7,6 +7,7 @@ import WebVulnOverview from './WebVulnOverview';
 import WebFindingCard from './WebFindingCard';
 import WebFindingDetailDrawer from './WebFindingDetailDrawer';
 import VulnRemediationPlan from './VulnRemediationPlan';
+import VulnExploitationPlan, { ExploitationItem } from './VulnExploitationPlan';
 import VulnGraph3D from './VulnGraph3D';
 import ScanReleaseSelector from './ScanReleaseSelector';
 
@@ -23,7 +24,7 @@ interface Props {
   onDeleteVersion?: (version: number) => void;
 }
 
-type Tab = 'headers' | 'cookies' | 'tls' | 'exposure' | 'cve' | 'graph' | 'solutions';
+type Tab = 'headers' | 'cookies' | 'tls' | 'exposure' | 'cve' | 'graph' | 'solutions' | 'exploitation';
 
 export default function WebVulnSection({
   report, status, progressMessage, progressPercent, errorMessage, onRetry,
@@ -42,6 +43,7 @@ export default function WebVulnSection({
     if (report.cve_findings.length) t.push('cve');
     t.push('graph');
     if (report.remediation_plan?.steps?.length) t.push('solutions');
+    if (report.all_findings.some((f) => f.ai_exploitability)) t.push('exploitation');
     return t.length ? t : ['exposure'];
   }, [report]);
 
@@ -146,6 +148,19 @@ export default function WebVulnSection({
         />
       ) : activeTab === 'solutions' ? (
         <VulnRemediationPlan plan={report.remediation_plan} />
+      ) : activeTab === 'exploitation' ? (
+        <VulnExploitationPlan
+          items={report.all_findings.map((f): ExploitationItem => ({
+            id: f.id,
+            title: f.title,
+            severity: f.severity,
+            category: f.category,
+            vector: f.ai_exploit_vector,
+            description: f.ai_exploitability,
+            plan: f.ai_exploit_plan,
+          }))}
+          summary={report.exploitation_plan?.summary}
+        />
       ) : findings.length === 0 ? (
         <div className="p-6 rounded-md border border-[var(--border-color)] bg-[var(--card-bg)] text-sm text-[var(--muted)]">
           No findings in this category. 🎉
@@ -172,6 +187,7 @@ function tabLabel(t: Tab, report: WebVulnReport): string {
     case 'cve': return `🐛 CVEs (${report.cve_findings.length})`;
     case 'graph': return `🕸️ Graph`;
     case 'solutions': return `🛠️ Solutions`;
+    case 'exploitation': return `⚔️ Exploitation`;
   }
 }
 

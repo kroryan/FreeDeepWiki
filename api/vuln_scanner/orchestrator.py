@@ -151,6 +151,8 @@ async def run_vuln_scan(
             web_findings = await run_code_scan_toolkit(
                 repo_dir, on_progress=(lambda msg, pct=None: _p(msg, pct)) if on_progress else None,
             )
+            from api.web_vuln_scanner.exploitation_defaults import apply_exploitation_defaults
+            apply_exploitation_defaults(web_findings)
             code_scan_findings = [f.to_dict() for f in web_findings]
             code_scan_ran = True
         except Exception as exc:  # noqa: BLE001
@@ -171,6 +173,11 @@ async def run_vuln_scan(
 
     from api.vuln_common.remediation import build_remediation_plan
     report.remediation_plan = build_remediation_plan(
+        [f.to_dict() for f in findings] + code_scan_findings
+    ).to_dict()
+
+    from api.vuln_common.exploitation import build_exploitation_plan
+    report.exploitation_plan = build_exploitation_plan(
         [f.to_dict() for f in findings] + code_scan_findings
     ).to_dict()
 

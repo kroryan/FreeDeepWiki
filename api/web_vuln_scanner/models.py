@@ -45,6 +45,18 @@ class WebFinding:
     ai_dismissed: bool = False
     ai_dismiss_reason: str = ""
     ai_notes: str = ""
+    # Same three fields as api.vuln_scanner.models.CVEFinding's ai_* trio, so
+    # both scan types can be analysed and rendered by shared code. Filled
+    # with deterministic id/category-based text first by
+    # api.web_vuln_scanner.exploitation_defaults.apply_exploitation_defaults
+    # (so the report is coherent even with no LLM), then overwritten with a
+    # real per-finding analysis by
+    # api.web_vuln_scanner.exploitation_llm.analyze_web_exploitation when an
+    # LLM is available -- same "defaults first, LLM may overwrite" strategy
+    # as the dependency scanner's llm_analyzer.
+    ai_exploitability: str = ""  # exhaustive attacker-perspective description
+    ai_exploit_vector: str = ""  # short attack path/prerequisites
+    ai_exploit_plan: str = ""  # concrete numbered steps an attacker would follow
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -78,6 +90,10 @@ class WebVulnReport:
     # Consolidated, prioritized "Suggested Solutions" page -- see
     # api.vuln_common.remediation.build_remediation_plan.
     remediation_plan: Dict[str, Any] = field(default_factory=dict)
+    # Consolidated, prioritized "Exploitation Playbook" page (attacker's-
+    # perspective mirror of remediation_plan) -- see
+    # api.vuln_common.exploitation.build_exploitation_plan.
+    exploitation_plan: Dict[str, Any] = field(default_factory=dict)
     # Interactive graph (site -> technology -> CVE, site -> category -> finding)
     # -- see build_web_graph below. Mirrors api.vuln_scanner's dependency graph
     # so the frontend can reuse the same VulnGraph3D/2D component for both.

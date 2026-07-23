@@ -104,7 +104,9 @@ export default function VulnDetailDrawer({ finding, onClose }: Props) {
           )}
 
           <AiField label="📊 Impact analysis" text={finding.ai_impact_analysis} />
+          <AiField label="🎯 Attack vector" text={finding.ai_exploit_vector} />
           <AiField label="⚔️ Exploitability" text={finding.ai_exploitability} />
+          <AiField label="🗺️ Exploitation plan" text={finding.ai_exploit_plan} mono />
           <AiField label="🛠️ Remediation" text={finding.ai_remediation} />
 
           {finding.ai_priority > 0 && (
@@ -161,12 +163,18 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function AiField({ label, text }: { label: string; text: string }) {
+function AiField({ label, text, mono }: { label: string; text: string; mono?: boolean }) {
   if (!text) return null;
   return (
     <div>
       <div className="text-[11px] uppercase tracking-wide text-[var(--muted)] mb-1">{label}</div>
-      <div className="text-[var(--foreground)]/90 whitespace-pre-wrap">{text}</div>
+      <div
+        className={`text-[var(--foreground)]/90 whitespace-pre-wrap ${
+          mono ? 'font-mono text-xs bg-[var(--background)]/50 p-2 rounded' : ''
+        }`}
+      >
+        {text}
+      </div>
     </div>
   );
 }
