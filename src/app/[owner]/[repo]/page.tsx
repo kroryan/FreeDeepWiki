@@ -24,7 +24,7 @@ import { StreamParser } from '@/utils/streamParser';
 import Link from 'next/link';
 import { useParams, useSearchParams } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { FaBitbucket, FaBookOpen, FaDownload, FaEdit, FaExclamationTriangle, FaFileCode, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHistory, FaHome, FaMagic, FaMobileAlt, FaSave, FaSync, FaTimes, FaTrash } from 'react-icons/fa';
+import { FaArchive, FaBitbucket, FaBookOpen, FaDownload, FaEdit, FaExclamationTriangle, FaFileCode, FaFileExport, FaFolder, FaGithub, FaGitlab, FaHistory, FaHome, FaMagic, FaMobileAlt, FaSave, FaSync, FaTimes, FaTrash } from 'react-icons/fa';
 // Define the WikiSection and WikiStructure types directly in this file
 // since the imported types don't have the sections and rootSections properties
 interface WikiSection {
@@ -569,6 +569,12 @@ export default function RepoWikiPage() {
   const [cloneProgress, setCloneProgress] = useState<CloneProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [wikiStructure, setWikiStructure] = useState<WikiStructure | undefined>();
+  // The full file/page tree used to plan the wiki structure, kept around so
+  // the introduction page's content-generation prompt can embed it verbatim
+  // (see generatePageContent's isIntroPage branch) -- guarantees every wiki
+  // has one authoritative, complete rendering of the tree in one place,
+  // instead of leaving it to chance whether/where the LLM mentions paths.
+  const [repoFileTree, setRepoFileTree] = useState<string>('');
   const [currentPageId, setCurrentPageId] = useState<string | undefined>();
   const [generatedPages, setGeneratedPages] = useState<Record<string, WikiPage>>({});
   const [pagesInProgress, setPagesInProgress] = useState(new Set<string>());
@@ -837,6 +843,22 @@ export default function RepoWikiPage() {
         // upstream. Cap defensively at the point of use.
         const filePaths = page.filePaths.slice(0, MAX_RELEVANT_FILES_PER_PAGE);
 
+        // The full file/page tree is only ever fed to the structure-planning
+        // call (determineWikiStructure), never to individual page prompts --
+        // so whether the tree ends up visible anywhere in the finished wiki
+        // was previously left entirely to LLM whim (it might quote a few
+        // paths on some page, all of them on none, or nowhere at all).
+        // Force it into exactly one place, deterministically: the first page
+        // in document order (pages[0], which every structure prompt is
+        // instructed to make "Overview"/the equivalent introduction section
+        // in the target language -- checking by position rather than an
+        // English title match keeps this correct for every generation
+        // language). No other page's prompt mentions the tree at all.
+        const isIntroPage = !!repoFileTree && wikiStructure?.pages?.[0]?.id === page.id;
+        const introStructureBlock = isIntroPage
+          ? `\n\nCRITICAL STRUCTURE REQUIREMENT: This is the introduction/overview page, so it MUST include a "## Project Structure" section presenting the COMPLETE file/page tree below, verbatim, inside a single fenced code block (do not summarize, reorder, or omit any entries) -- this is the one authoritative place in the whole wiki where the full tree is shown:\n\`\`\`\n${repoFileTree}\n\`\`\`\n`
+          : '';
+
         // Store the initially generated content BEFORE rendering/potential modification
         setGeneratedPages(prev => ({
           ...prev,
@@ -912,7 +934,7 @@ Based ONLY on the content of the \`[RELEVANT_PAGES]\` and what can be observed i
 5.  **Citations:** Cite the specific crawled page path(s) each claim is drawn from, e.g. \`Sources: [path/to/page.md]()\`. Cite as many of the provided pages as are actually relevant -- do not pad citations to hit an arbitrary count.
 6.  **Accuracy:** Only state what's actually evidenced in the provided pages. If something can't be determined from crawled HTML/Markdown alone (e.g. backend logic), say so rather than inventing it.
 7.  **Conclusion:** End with a brief summary if appropriate for "${page.title}".
-
+${introStructureBlock}
 IMPORTANT: Generate the content in ${pageLanguageLine} language.` : `You are an expert wiki writer creating a content wiki about a website's subject matter (not its technical implementation).
 Your task is to generate a comprehensive and accurate wiki page in Markdown format about a specific topic within the site's content, the way the site itself organizes that topic.
 
@@ -941,7 +963,7 @@ Based ONLY on the content of the \`[RELEVANT_PAGES]\`:
 4.  **Citations:** Cite the specific crawled page path(s) each claim is drawn from, e.g. \`Sources: [path/to/page.md]()\`. Cite as many of the provided pages as are actually relevant -- do not pad citations to hit an arbitrary count.
 5.  **Accuracy:** Do not invent facts beyond what the source pages state. Do NOT analyze the site's own technical implementation (no HTML/CSS/framework talk) -- write about the subject matter itself.
 6.  **Conclusion:** End with a brief summary if appropriate for "${page.title}".
-
+${introStructureBlock}
 IMPORTANT: Generate the content in ${pageLanguageLine} language.`) : `You are an expert technical writer and software architect.
 Your task is to generate a comprehensive and accurate technical wiki page in Markdown format about a specific feature, system, or module within a given software project.
 
@@ -1032,7 +1054,7 @@ Based ONLY on the content of the \`[RELEVANT_SOURCE_FILES]\`:
 8.  **Clarity and Conciseness:** Use clear, professional, and concise technical language suitable for other developers working on or learning about the project. Avoid unnecessary jargon, but use correct technical terms where appropriate.
 
 9.  **Conclusion/Summary:** End with a brief summary paragraph if appropriate for "${page.title}", reiterating the key aspects covered and their significance within the project.
-
+${introStructureBlock}
 IMPORTANT: Generate the content in ${pageLanguageLine} language.
 
 Remember:
@@ -1244,7 +1266,7 @@ Remember:
         setLoadingMessage(undefined); // Clear specific loading message
       }
     });
-  }, [generatedPages, currentToken, effectiveRepoInfo, selectedProviderState, selectedModelState, isCustomSelectedModelState, customSelectedModelState, modelExcludedDirs, modelExcludedFiles, modelIncludedDirs, modelIncludedFiles, technicalAnalysisEnabled, language, activeContentRequests, generateFileUrl]);
+  }, [generatedPages, currentToken, effectiveRepoInfo, selectedProviderState, selectedModelState, isCustomSelectedModelState, customSelectedModelState, modelExcludedDirs, modelExcludedFiles, modelIncludedDirs, modelIncludedFiles, technicalAnalysisEnabled, language, activeContentRequests, generateFileUrl, wikiStructure, repoFileTree]);
 
   // Determine the wiki structure from repository data
   const determineWikiStructure = useCallback(async (fileTree: string, readme: string, owner: string, repo: string, force: boolean = false) => {
@@ -1264,6 +1286,7 @@ Remember:
     try {
       setStructureRequestInProgress(true);
       setLoadingMessage(messages.loading?.determiningStructure || 'Determining wiki structure...');
+      setRepoFileTree(fileTree);
 
       // Get repository URL
       const repoUrl = getRepoUrl(effectiveRepoInfo);
@@ -2941,7 +2964,7 @@ IMPORTANT:
     }
   }, [effectiveRepoInfo.type, loadWebVulnReleases]);
 
-  const exportWiki = useCallback(async (format: 'markdown' | 'json' | 'obsidian' | 'hdwreader' | 'mediawiki_xml') => {
+  const exportWiki = useCallback(async (format: 'markdown' | 'json' | 'obsidian' | 'hdwreader' | 'mediawiki_xml' | 'zim') => {
     if (!wikiStructure || Object.keys(generatedPages).length === 0) {
       setExportError('No wiki content to export');
       return;
@@ -2997,6 +3020,10 @@ IMPORTANT:
         exportBody.owner = effectiveRepoInfo.owner;
         exportBody.repo = effectiveRepoInfo.repo;
       }
+      if (format === 'zim') {
+        exportBody.description = wikiStructure.description;
+        exportBody.language = language;
+      }
 
       // Make API call to export wiki
       const response = await fetch(`/export/wiki`, {
@@ -3014,7 +3041,7 @@ IMPORTANT:
 
       // Get the filename from the Content-Disposition header if available
       const contentDisposition = response.headers.get('Content-Disposition');
-      const defaultExt = format === 'markdown' ? 'md' : format === 'obsidian' ? 'zip' : format === 'hdwreader' ? 'hdwreader' : format === 'mediawiki_xml' ? 'xml' : 'json';
+      const defaultExt = format === 'markdown' ? 'md' : format === 'obsidian' ? 'zip' : format === 'hdwreader' ? 'hdwreader' : format === 'mediawiki_xml' ? 'xml' : format === 'zim' ? 'zim' : 'json';
       let filename = `${effectiveRepoInfo.repo}_wiki.${defaultExt}`;
 
       if (contentDisposition) {
@@ -4159,6 +4186,15 @@ IMPORTANT:
                     >
                       <FaFileCode className="mr-2" />
                       Export as MediaWiki XML
+                    </button>
+                    <button
+                      onClick={() => exportWiki('zim')}
+                      disabled={isExporting}
+                      title="Download as an offline .zim archive -- browsable in Kiwix or any other ZIM reader with no internet connection"
+                      className="flex items-center text-xs px-3 py-2 bg-[var(--background)] text-[var(--foreground)] rounded-md hover:bg-[var(--background)]/80 disabled:opacity-50 disabled:cursor-not-allowed border border-[var(--border-color)] transition-colors"
+                    >
+                      <FaArchive className="mr-2" />
+                      Export as ZIM (offline archive)
                     </button>
                     {effectiveRepoInfo.type === 'fanwiki' && (
                       <button

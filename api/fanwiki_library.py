@@ -9,6 +9,7 @@ sync with the Markdown tree on disk.
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import os
 import posixpath
@@ -491,6 +492,86 @@ def export_hdwreader(entry_id: str, output_path: str) -> Dict:
         "format": "hdwreader",
         "page_count": len(pages),
         "asset_count": len(assets),
+        "title": entry["name"],
+    }
+
+
+def export_zim(entry_id: str, output_path: str) -> Dict:
+    """Write an offline .zim archive for an imported wiki -- same page/link/
+    image resolution as export_hdwreader (path_to_id mapping, regex-based
+    markdown link/image rewriting), but targeting the ZIM format instead of
+    a zip bundle so any Kiwix-family reader (or this app's own
+    HackDeepWikiReader) can browse it with no internet connection and this
+    app not even running.
+    """
+    from api.zim_export import ZimAssetSpec, ZimPageSpec, build_zim, guess_mimetype
+
+    source = _find(entry_id)
+    if source is None:
+        raise KeyError(entry_id)
+    local_dir, meta = source
+    entry = _entry_from_manifest(local_dir, meta)
+    pages = _manifest_pages(meta)
+    path_to_id = {
+        str(page["relpath"]): f"page-{hashlib.sha256(str(page['relpath']).encode('utf-8')).hexdigest()[:20]}"
+        for page in pages
+    }
+
+    zim_pages: List[ZimPageSpec] = []
+    for page in pages:
+        relpath = str(page["relpath"])
+        page_id = path_to_id[relpath]
+        body = _reader_markdown(_read_page_body(local_dir, relpath))
+
+        def replace_image(match: "re.Match") -> str:
+            target, fragment = _resolve_markdown_target(relpath, match.group(2))
+            if target and target.startswith("_images/"):
+                return f"![{match.group(1)}](../assets/{target[len('_images/'):]}{fragment})"
+            return match.group(0)
+
+        def replace_link(match: "re.Match") -> str:
+            target, fragment = _resolve_markdown_target(relpath, match.group(2))
+            target_id = path_to_id.get(target or "")
+            if not target_id:
+                return match.group(0)
+            return f"[{match.group(1)}](../pages/{target_id}.html{fragment})"
+
+        body = _MARKDOWN_IMAGE_RE.sub(replace_image, body)
+        body = _MARKDOWN_LINK_RE.sub(replace_link, body)
+        zim_pages.append(ZimPageSpec(page_id=page_id, title=str(page.get("title") or relpath), markdown=body))
+
+    assets_dir = os.path.join(local_dir, "_images")
+    zim_assets: List[ZimAssetSpec] = []
+    if os.path.isdir(assets_dir):
+        for root, dirs, files in os.walk(assets_dir, followlinks=False):
+            dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(root, name))]
+            for filename in files:
+                source_path = os.path.join(root, filename)
+                if os.path.islink(source_path) or not os.path.isfile(source_path):
+                    continue
+                relative = os.path.relpath(source_path, assets_dir).replace(os.sep, "/")
+                zim_assets.append(ZimAssetSpec(
+                    archive_path=f"assets/{relative}",
+                    filepath=source_path,
+                    mimetype=guess_mimetype(relative),
+                ))
+
+    result = build_zim(
+        output_path,
+        title=entry["name"],
+        description=f"Imported MediaWiki XML source for {entry['name']}",
+        language=str(meta.get("language") or "en"),
+        creator="HackDeepWiki",
+        publisher="HackDeepWiki",
+        zim_name=_safe_archive_name(entry["name"]).replace("_", "-").lower() or "fanwiki",
+        pages=zim_pages,
+        assets=zim_assets,
+        index_intro_html=f'<p>Source: <a href="{html.escape(entry["start_url"])}">{html.escape(entry["start_url"])}</a></p>',
+    )
+    return {
+        "format": "zim",
+        "page_count": result["page_count"],
+        "asset_count": result["asset_count"],
         "title": entry["name"],
     }
 

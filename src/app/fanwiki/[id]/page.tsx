@@ -10,6 +10,7 @@ import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  FaArchive,
   FaBookOpen,
   FaExternalLinkAlt,
   FaFolderOpen,
@@ -355,6 +356,15 @@ export default function FanwikiReaderPage() {
           >
             <FaMobileAlt />
             Exportar HDWReader
+          </a>
+          <a
+            href={`/api/fanwiki/${encodeURIComponent(fanwikiId)}/export/zim`}
+            className="flex items-center gap-2 px-3 py-2 text-xs rounded-md border border-[var(--border-color)] text-[var(--foreground)] hover:border-[var(--accent-primary)] hover:text-[var(--accent-primary)] transition-colors"
+            title="Descargar como archivo .zim offline -- legible en Kiwix o cualquier lector ZIM sin conexión a internet"
+            data-testid="fanwiki-export-zim"
+          >
+            <FaArchive />
+            Exportar ZIM
           </a>
           <span className="ml-auto text-[11px] text-[var(--muted)]">
             La reparación inicial se ejecuta automáticamente al importar.

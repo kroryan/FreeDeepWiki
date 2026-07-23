@@ -66,6 +66,13 @@ playwright = ">=1.40.0"
 beautifulsoup4 = ">=4.12.0"
 markdownify = ">=0.11.0"
 
+# Wiki -> .zim export (api.zim_export): renders each page's Markdown body to
+# HTML for the archive. Was already present transitively (pulled in by
+# another dependency) but not declared -- promoted to a direct dependency
+# since api.zim_export now imports it explicitly and shouldn't rely on an
+# undeclared transitive package that could disappear on a lockfile update.
+markdown-it-py = ">=3.0.0"
+
 # Website/dependency vuln scanner graph persistence (api.web_vuln_scanner.graph_db).
 # Purely optional at runtime (lazy-imported, wrapped in try/except) -- Neo4j
 # itself is a separate opt-in Docker service (docker/vulnscan/docker-compose.yml),

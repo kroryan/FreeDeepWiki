@@ -10,6 +10,14 @@ import adalflow as adal
 from api.tools.embedder import get_embedder
 from api.prompts import RAG_SYSTEM_PROMPT as system_prompt, RAG_TEMPLATE
 
+# How many extra candidates to fetch from FAISS beyond the configured
+# retriever.top_k, so _diversify_doc_indices has room to swap same-file
+# near-duplicates for coverage of more distinct source files.
+RETRIEVER_OVERFETCH_MULTIPLIER = 4
+# Max chunks any single source file may contribute to the final selection
+# before its remaining candidates are deprioritized in favor of other files.
+MAX_CHUNKS_PER_SOURCE_FILE = 3
+
 # Create our own implementation of the conversation classes
 @dataclass
 class UserQuery:
@@ -413,8 +421,25 @@ IMPORTANT FORMATTING RULES:
         try:
             # Use the appropriate embedder for retrieval
             retrieve_embedder = self.query_embedder if self.is_ollama_embedder else self.embedder
+            retriever_config = dict(configs["retriever"])
+            # The number of chunks actually fed to the page-generation
+            # prompt, per configs["retriever"]["top_k"] (default 20).
+            self.final_top_k = int(retriever_config.get("top_k", 20))
+            # Ask FAISS for more candidates than final_top_k so call() can
+            # trade a few near-duplicate top hits for cross-file coverage
+            # (see _diversify_doc_indices) -- naive top-k-by-raw-similarity
+            # otherwise lets a handful of "distinctive" files anywhere in the
+            # repo permanently crowd out a whole directory of many smaller,
+            # textually-similar files (docs, generated code, data fixtures,
+            # etc.), whose content then never reaches the LLM even though its
+            # paths appear fine in the repo structure.
+            overfetch_k = max(
+                self.final_top_k,
+                min(len(self.transformed_docs), self.final_top_k * RETRIEVER_OVERFETCH_MULTIPLIER),
+            )
+            retriever_config["top_k"] = overfetch_k
             self.retriever = FAISSRetriever(
-                **configs["retriever"],
+                **retriever_config,
                 embedder=retrieve_embedder,
                 documents=self.transformed_docs,
                 document_map_func=lambda doc: doc.vector,
@@ -444,6 +469,44 @@ IMPORTANT FORMATTING RULES:
                 logger.error(f"Sample embedding sizes: {', '.join(sizes)}")
             raise
 
+    def _diversify_doc_indices(self, doc_indices: List[int]) -> List[int]:
+        """Re-rank an over-fetched, similarity-ordered candidate list so the
+        final self.final_top_k selection isn't dominated by (or entirely
+        missing) any one source file.
+
+        Walks the ranked candidates in order, taking each one unless its
+        source file has already contributed MAX_CHUNKS_PER_SOURCE_FILE
+        chunks; once final_top_k slots are filled this way, if the cap left
+        us short (not enough distinct files existed among the candidates),
+        backfill with the next-best candidates regardless of the cap so this
+        never returns fewer chunks than configured -- it only ever trades
+        which near-duplicate chunks fill the same budget, never shrinks it.
+        """
+        if len(doc_indices) <= self.final_top_k:
+            return doc_indices
+
+        per_file_count: Dict[str, int] = {}
+        selected: List[int] = []
+        leftover: List[int] = []
+        for idx in doc_indices:
+            if len(selected) >= self.final_top_k:
+                leftover.append(idx)
+                continue
+            doc = self.transformed_docs[idx]
+            file_path = getattr(doc, "meta_data", None) or {}
+            key = file_path.get("file_path", idx) if isinstance(file_path, dict) else idx
+            count = per_file_count.get(key, 0)
+            if count < MAX_CHUNKS_PER_SOURCE_FILE:
+                selected.append(idx)
+                per_file_count[key] = count + 1
+            else:
+                leftover.append(idx)
+
+        if len(selected) < self.final_top_k:
+            selected.extend(leftover[: self.final_top_k - len(selected)])
+
+        return selected
+
     def call(self, query: str, language: str = "en") -> Tuple[List]:
         """
         Process a query using RAG.
@@ -457,10 +520,13 @@ IMPORTANT FORMATTING RULES:
         try:
             retrieved_documents = self.retriever(query)
 
+            doc_indices = self._diversify_doc_indices(retrieved_documents[0].doc_indices)
+            retrieved_documents[0].doc_indices = doc_indices
+
             # Fill in the documents
             retrieved_documents[0].documents = [
                 self.transformed_docs[doc_index]
-                for doc_index in retrieved_documents[0].doc_indices
+                for doc_index in doc_indices
             ]
 
             return retrieved_documents

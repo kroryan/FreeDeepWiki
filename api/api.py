@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import html as html_lib
 import shutil
 import tempfile
 import zipfile
@@ -148,8 +149,8 @@ class WikiExportRequest(BaseModel):
     """
     repo_url: str = Field(..., description="URL of the repository")
     pages: List[WikiPage] = Field(..., description="List of wiki pages to export")
-    format: Literal["markdown", "json", "obsidian", "hdwreader", "mediawiki_xml"] = Field(
-        ..., description="Export format (markdown, json, obsidian vault zip, hdwreader portable bundle, or MediaWiki-compatible XML)")
+    format: Literal["markdown", "json", "obsidian", "hdwreader", "mediawiki_xml", "zim"] = Field(
+        ..., description="Export format (markdown, json, obsidian vault zip, hdwreader portable bundle, MediaWiki-compatible XML, or offline .zim archive)")
     title: Optional[str] = Field(None, description="Wiki title (used for the Obsidian vault name/index)")
     version: Optional[int] = Field(None, description="Wiki release version being exported (informational)")
     # 🔐 Security Analysis — optional vulnerability report to embed in the
@@ -536,6 +537,21 @@ async def export_wiki(request: WikiExportRequest):
             version_suffix = f"_v{request.version}" if request.version else ""
             filename = f"{repo_name}_wiki{version_suffix}_{timestamp}.xml"
             media_type = "application/xml"
+        elif request.format == "zim":
+            # Offline archive readable by any Kiwix-family reader (or this
+            # app's own HackDeepWikiReader, which already reads .zim files
+            # for imported content) -- see api.zim_export for the shared
+            # builder used by both this and the imported-fanwiki export.
+            content = generate_zim_export(
+                repo_url=request.repo_url,
+                pages=request.pages,
+                title=request.title or f"{repo_name} Wiki",
+                description=request.description or "",
+                language=request.language or "en",
+            )
+            version_suffix = f"_v{request.version}" if request.version else ""
+            filename = f"{repo_name}_wiki{version_suffix}_{timestamp}.zim"
+            media_type = "application/octet-stream"
         else:  # JSON format
             # Generate JSON content
             content = generate_json_export(request.repo_url, request.pages)
@@ -702,6 +718,49 @@ def generate_json_export(repo_url: str, pages: List[WikiPage]) -> str:
 
     # Convert to JSON string with pretty formatting
     return json.dumps(export_data, indent=2)
+
+
+def generate_zim_export(
+    repo_url: str,
+    pages: List[WikiPage],
+    title: str,
+    description: str,
+    language: str,
+) -> bytes:
+    """Generate an offline .zim archive of the wiki pages.
+
+    Writes via a temp file (libzim.writer.Creator only writes to a real
+    filesystem path, not an in-memory buffer) and reads it back into bytes,
+    matching every other export format's `content: bytes` return shape so
+    the /export/wiki route stays a single uniform Response(...) call.
+    """
+    from api.zim_export import ZimPageSpec, build_zim
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".zim")
+    os.close(fd)
+    try:
+        os.remove(tmp_path)  # Creator refuses to write over an existing file
+        build_zim(
+            tmp_path,
+            title=title,
+            description=description or title,
+            language=language,
+            creator="HackDeepWiki",
+            publisher="HackDeepWiki",
+            zim_name=re.sub(r"[^a-z0-9.]+", "-", title.lower()).strip("-") or "wiki",
+            pages=[
+                ZimPageSpec(page_id=page.id, title=page.title, markdown=page.content)
+                for page in pages
+            ],
+            index_intro_html=f'<p><a href="{html_lib.escape(repo_url)}">{html_lib.escape(repo_url)}</a></p>',
+        )
+        with open(tmp_path, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.remove(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 def _obsidian_safe_filename(title: str) -> str:
@@ -2178,21 +2237,21 @@ async def export_imported_fanwiki(fanwiki_id: str, export_format: str):
     wiki in memory. The archive is removed after the response completes.
     """
     entry = _get_fanwiki_entry_or_404(fanwiki_id)
-    if export_format not in {"obsidian", "hdwreader"}:
+    if export_format not in {"obsidian", "hdwreader", "zim"}:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported export format. Use obsidian or hdwreader.",
+            detail="Unsupported export format. Use obsidian, hdwreader, or zim.",
         )
 
-    suffix = ".zip" if export_format == "obsidian" else ".hdwreader"
+    suffix = {"obsidian": ".zip", "hdwreader": ".hdwreader", "zim": ".zim"}[export_format]
     fd, archive_path = tempfile.mkstemp(prefix="hackdeepwiki-export-", suffix=suffix)
     os.close(fd)
     try:
-        exporter = (
-            fanwiki_library.export_obsidian
-            if export_format == "obsidian"
-            else fanwiki_library.export_hdwreader
-        )
+        exporter = {
+            "obsidian": fanwiki_library.export_obsidian,
+            "hdwreader": fanwiki_library.export_hdwreader,
+            "zim": fanwiki_library.export_zim,
+        }[export_format]
         result = await asyncio.to_thread(exporter, fanwiki_id, archive_path)
     except (KeyError, FileNotFoundError):
         try:
@@ -2213,14 +2272,15 @@ async def export_imported_fanwiki(fanwiki_id: str, export_format: str):
     safe_name = re.sub(
         r"[^A-Za-z0-9._-]+", "_", str(entry.get("repo") or "fanwiki")
     ).strip("._")
-    filename = (
-        f"{safe_name or 'fanwiki'}_obsidian.zip"
-        if export_format == "obsidian"
-        else f"{safe_name or 'fanwiki'}.hdwreader"
-    )
+    filename = {
+        "obsidian": f"{safe_name or 'fanwiki'}_obsidian.zip",
+        "hdwreader": f"{safe_name or 'fanwiki'}.hdwreader",
+        "zim": f"{safe_name or 'fanwiki'}.zim",
+    }[export_format]
+    media_type = "application/zip" if export_format != "zim" else "application/octet-stream"
     return FileResponse(
         archive_path,
-        media_type="application/zip",
+        media_type=media_type,
         filename=filename,
         headers={
             "X-HackDeepWiki-Page-Count": str(result["page_count"]),
