@@ -2,6 +2,7 @@
 'use client';
 
 import ChatWidget from '@/components/ChatWidget';
+import FileBrowserModal from '@/components/FileBrowserModal';
 import Markdown from '@/components/Markdown';
 import ModelSelectionModal, { AppliedModelSelection } from '@/components/ModelSelectionModal';
 import ThemeToggle from '@/components/theme-toggle';
@@ -608,6 +609,47 @@ export default function RepoWikiPage() {
   const [vulnReleases, setVulnReleases] = useState<ScanRelease[]>([]);
   const [selectedVulnVersion, setSelectedVulnVersion] = useState<number | null>(null);
   const [isVulnRescanModalOpen, setIsVulnRescanModalOpen] = useState(false);
+
+  // Attaching an images folder to this fanwiki after the fact (see
+  // api/fanwiki_import.py:attach_images) -- the wiki being viewed IS the
+  // target, so start_url comes straight from effectiveRepoInfo, never typed
+  // by the user (a prior version of this asked for it as free text, which
+  // made no sense: the button already lives on the one wiki it applies to).
+  const [isAttachImagesModalOpen, setIsAttachImagesModalOpen] = useState(false);
+  const [attachImagesDir, setAttachImagesDir] = useState('');
+  const [isAttachImagesBrowserOpen, setIsAttachImagesBrowserOpen] = useState(false);
+  const [attachImagesRunning, setAttachImagesRunning] = useState(false);
+  const [attachImagesError, setAttachImagesError] = useState<string | null>(null);
+  const [attachImagesResult, setAttachImagesResult] = useState<{
+    files_scanned: number; images_attached: number; images_still_missing: number;
+  } | null>(null);
+
+  const handleAttachImages = useCallback(async () => {
+    const imagesDir = attachImagesDir.trim();
+    if (!imagesDir) {
+      setAttachImagesError('Introduce la carpeta de imágenes.');
+      return;
+    }
+    setAttachImagesRunning(true);
+    setAttachImagesError(null);
+    setAttachImagesResult(null);
+    try {
+      const response = await fetch('/api/fanwiki/attach_images', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ start_url: getRepoUrl(effectiveRepoInfo), images_dir: imagesDir }),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail || data.error || 'Fallo al adjuntar imágenes');
+      }
+      setAttachImagesResult(data);
+    } catch (e: unknown) {
+      setAttachImagesError(e instanceof Error ? e.message : 'Fallo al adjuntar imágenes');
+    } finally {
+      setAttachImagesRunning(false);
+    }
+  }, [attachImagesDir, effectiveRepoInfo]);
 
   // 🌐 Website vulnerability scan state -- separate report shape/endpoint
   // from the dependency scan above (WebVulnReport vs VulnReport), used only
@@ -4125,6 +4167,20 @@ IMPORTANT:
                       <FaFileCode className="mr-2" />
                       Export as MediaWiki XML
                     </button>
+                    {effectiveRepoInfo.type === 'fanwiki' && (
+                      <button
+                        onClick={() => {
+                          setIsAttachImagesModalOpen(true);
+                          setAttachImagesError(null);
+                          setAttachImagesResult(null);
+                        }}
+                        title="Match a local folder of images against this wiki's pages by filename and embed the ones that match -- for images that weren't available (or weren't provided) when this fanwiki was first imported"
+                        className="flex items-center text-xs px-3 py-2 bg-[var(--background)] text-[var(--foreground)] rounded-md hover:bg-[var(--background)]/80 disabled:opacity-50 disabled:cursor-not-allowed border border-[var(--border-color)] transition-colors"
+                      >
+                        <FaFolder className="mr-2" />
+                        Attach images
+                      </button>
+                    )}
                     {(vulnReport || webVulnReport) && (
                       <div className="mt-1 p-2 rounded-md border border-[var(--border-color)] bg-[var(--background)]/40 text-xs space-y-1.5">
                         <label className="flex items-center gap-2 text-[var(--foreground)] cursor-pointer">
@@ -4437,6 +4493,81 @@ IMPORTANT:
             enableDeepScan: selection.enableDeepScan,
           });
         }}
+      />
+
+      {isAttachImagesModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-lg shadow-custom w-full max-w-lg p-6 card-japanese max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold text-[var(--foreground)] mb-2">
+              Attach images to this fanwiki
+            </h3>
+            <p className="text-xs text-[var(--muted)] mb-4">
+              Match a local folder of images against <span className="font-mono">{repo}</span>&apos;s
+              pages by filename and embed the ones that match. Safe to run more than once --
+              already-embedded images are left alone, only remaining placeholders are resolved.
+            </p>
+
+            <label className="block text-xs font-medium text-[var(--foreground)] mb-1">
+              Images folder
+            </label>
+            <div className="flex gap-2 mb-3">
+              <input
+                type="text"
+                value={attachImagesDir}
+                onChange={(e) => setAttachImagesDir(e.target.value)}
+                placeholder="/home/user/forgottenrealms_images/"
+                className="input-japanese block flex-1 px-3 py-2.5 border-[var(--border-color)] rounded-lg bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
+                autoFocus
+                disabled={attachImagesRunning}
+              />
+              <button
+                type="button"
+                onClick={() => setIsAttachImagesBrowserOpen(true)}
+                className="px-3 py-2 rounded-lg text-sm text-[var(--foreground)] border border-[var(--border-color)] hover:bg-[var(--background)] transition-colors disabled:opacity-50"
+                disabled={attachImagesRunning}
+              >
+                Browse…
+              </button>
+            </div>
+
+            {attachImagesError && (
+              <div className="text-[var(--highlight)] text-xs mb-2">{attachImagesError}</div>
+            )}
+            {attachImagesResult && (
+              <div className="text-xs text-[var(--accent-primary)] mb-2">
+                Scanned {attachImagesResult.files_scanned} page(s): {attachImagesResult.images_attached}{' '}
+                image(s) attached, {attachImagesResult.images_still_missing} still missing.
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 mt-2">
+              <button
+                type="button"
+                onClick={() => setIsAttachImagesModalOpen(false)}
+                className="px-4 py-2 rounded-lg text-sm text-[var(--foreground)] hover:bg-[var(--background)] transition-colors"
+                disabled={attachImagesRunning}
+              >
+                Close
+              </button>
+              <button
+                type="button"
+                onClick={handleAttachImages}
+                className="btn-japanese px-4 py-2 rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={attachImagesRunning}
+              >
+                {attachImagesRunning ? 'Attaching…' : 'Attach images'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <FileBrowserModal
+        isOpen={isAttachImagesBrowserOpen}
+        onClose={() => setIsAttachImagesBrowserOpen(false)}
+        mode="directory"
+        title="Select an images folder"
+        onSelect={(path) => setAttachImagesDir(path)}
       />
     </div>
   );

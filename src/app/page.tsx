@@ -236,53 +236,15 @@ export default function Home() {
   const [pendingFanwikiStartUrl, setPendingFanwikiStartUrl] = useState<string | null>(null);
 
   // Which text field a FileBrowserModal invocation is currently filling in --
-  // one shared modal instance reused across every "Browse..." button (zim
-  // path, fanwiki xml path, fanwiki images dir, attach-images dir) rather
-  // than one modal per field.
+  // one shared modal instance reused across every "Browse..." button on this
+  // page (zim path, fanwiki xml path, fanwiki images dir) rather than one
+  // modal per field. Attaching images to an *already-imported* fanwiki later
+  // lives on that wiki's own page (src/app/[owner]/[repo]/page.tsx), not
+  // here -- it needs a specific wiki to target, which only makes sense to
+  // pick by navigating to it, not by asking the user to retype its URL.
   const [fsBrowserTarget, setFsBrowserTarget] = useState<
-    'zim' | 'fanwikiXml' | 'fanwikiImages' | 'attachImages' | null
+    'zim' | 'fanwikiXml' | 'fanwikiImages' | null
   >(null);
-
-  // Attaching an images folder to a fanwiki that was already imported
-  // (without images, or with a different/incomplete folder) earlier --
-  // separate from the import-time images_dir field above, since the user
-  // explicitly wants this addable after the fact, not only during import.
-  const [isAttachImagesModalOpen, setIsAttachImagesModalOpen] = useState(false);
-  const [attachStartUrl, setAttachStartUrl] = useState('');
-  const [attachImagesDir, setAttachImagesDir] = useState('');
-  const [attachRunning, setAttachRunning] = useState(false);
-  const [attachError, setAttachError] = useState<string | null>(null);
-  const [attachResult, setAttachResult] = useState<{
-    files_scanned: number; images_attached: number; images_still_missing: number;
-  } | null>(null);
-
-  const handleAttachImages = async () => {
-    const startUrl = attachStartUrl.trim();
-    const imagesDir = attachImagesDir.trim();
-    if (!startUrl || !imagesDir) {
-      setAttachError('Introduce la URL/origen de la wiki importada y la carpeta de imágenes.');
-      return;
-    }
-    setAttachRunning(true);
-    setAttachError(null);
-    setAttachResult(null);
-    try {
-      const response = await fetch('/api/fanwiki/attach_images', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ start_url: startUrl, images_dir: imagesDir }),
-      });
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.detail || data.error || 'Fallo al adjuntar imágenes');
-      }
-      setAttachResult(data);
-    } catch (e: unknown) {
-      setAttachError(e instanceof Error ? e.message : 'Fallo al adjuntar imágenes');
-    } finally {
-      setAttachRunning(false);
-    }
-  };
 
   const handleInspectFanwiki = async () => {
     const path = fanwikiXmlPath.trim();
@@ -877,18 +839,6 @@ export default function Home() {
             >
               Import fanwiki XML (MediaWiki export)
             </button>
-            <span className="text-[var(--muted)] text-xs">•</span>
-            <button
-              type="button"
-              onClick={() => {
-                setIsAttachImagesModalOpen(true);
-                setAttachError(null);
-                setAttachResult(null);
-              }}
-              className="text-sm text-[var(--muted)] hover:text-[var(--accent-primary)] underline underline-offset-2 transition-colors"
-            >
-              Attach images to an imported fanwiki
-            </button>
           </div>
           {rescanMessage && (
             <p className="text-center text-xs text-[var(--muted)] mt-1">{rescanMessage}</p>
@@ -1002,8 +952,8 @@ export default function Home() {
                 <p className="text-xs text-[var(--muted)] mb-1">
                   The XML dump never includes media -- point this at a local folder of images
                   (same filenames as in the wiki, e.g. downloaded separately) to embed them.
-                  Leave empty to skip images, and attach them later from the &quot;Attach images to
-                  an imported fanwiki&quot; link below if you get the folder afterwards.
+                  Leave empty to skip images: once the wiki is generated, its own page has an
+                  &quot;Attach images&quot; button to add them later if you get the folder afterwards.
                 </p>
                 <div className="flex gap-2 mb-3">
                   <input
@@ -1118,103 +1068,21 @@ export default function Home() {
             </div>
           )}
 
-          {isAttachImagesModalOpen && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-              <div className="bg-[var(--card-bg)] border border-[var(--border-color)] rounded-lg shadow-custom w-full max-w-lg p-6 card-japanese max-h-[90vh] overflow-y-auto">
-                <h3 className="text-lg font-semibold text-[var(--foreground)] mb-2">
-                  Attach images to an imported fanwiki
-                </h3>
-                <p className="text-xs text-[var(--muted)] mb-4">
-                  For a fanwiki already imported from XML (with no images, or an incomplete images
-                  folder) -- match any local folder of images against the wiki&apos;s pages by
-                  filename and embed the ones that match. Safe to run more than once; already
-                  embedded images are left alone and only remaining placeholders are resolved.
-                </p>
-
-                <label className="block text-xs font-medium text-[var(--foreground)] mb-1">
-                  Fanwiki source URL (the one used to import it)
-                </label>
-                <input
-                  type="text"
-                  value={attachStartUrl}
-                  onChange={(e) => setAttachStartUrl(e.target.value)}
-                  placeholder="https://forgottenrealms.fandom.com"
-                  className="input-japanese block w-full px-3 py-2.5 border-[var(--border-color)] rounded-lg bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)] mb-3"
-                  autoFocus
-                  disabled={attachRunning}
-                />
-
-                <label className="block text-xs font-medium text-[var(--foreground)] mb-1">
-                  Images folder
-                </label>
-                <div className="flex gap-2 mb-3">
-                  <input
-                    type="text"
-                    value={attachImagesDir}
-                    onChange={(e) => setAttachImagesDir(e.target.value)}
-                    placeholder="/home/user/forgottenrealms_images/"
-                    className="input-japanese block flex-1 px-3 py-2.5 border-[var(--border-color)] rounded-lg bg-transparent text-[var(--foreground)] focus:outline-none focus:border-[var(--accent-primary)]"
-                    disabled={attachRunning}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setFsBrowserTarget('attachImages')}
-                    className="px-3 py-2 rounded-lg text-sm text-[var(--foreground)] border border-[var(--border-color)] hover:bg-[var(--background)] transition-colors disabled:opacity-50"
-                    disabled={attachRunning}
-                  >
-                    Browse…
-                  </button>
-                </div>
-
-                {attachError && (
-                  <div className="text-[var(--highlight)] text-xs mb-2">{attachError}</div>
-                )}
-                {attachResult && (
-                  <div className="text-xs text-[var(--accent-primary)] mb-2">
-                    Scanned {attachResult.files_scanned} page(s): {attachResult.images_attached}{' '}
-                    image(s) attached, {attachResult.images_still_missing} still missing.
-                  </div>
-                )}
-
-                <div className="flex justify-end gap-2 mt-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsAttachImagesModalOpen(false)}
-                    className="px-4 py-2 rounded-lg text-sm text-[var(--foreground)] hover:bg-[var(--background)] transition-colors"
-                    disabled={attachRunning}
-                  >
-                    Close
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleAttachImages}
-                    className="btn-japanese px-4 py-2 rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                    disabled={attachRunning}
-                  >
-                    {attachRunning ? 'Attaching…' : 'Attach images'}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
           <FileBrowserModal
             isOpen={fsBrowserTarget !== null}
             onClose={() => setFsBrowserTarget(null)}
-            mode={fsBrowserTarget === 'fanwikiImages' || fsBrowserTarget === 'attachImages' ? 'directory' : 'file'}
+            mode={fsBrowserTarget === 'fanwikiImages' ? 'directory' : 'file'}
             extensions={fsBrowserTarget === 'zim' ? '.zim' : fsBrowserTarget === 'fanwikiXml' ? '.xml' : undefined}
             title={
               fsBrowserTarget === 'zim' ? 'Select a .zim file'
                 : fsBrowserTarget === 'fanwikiXml' ? 'Select a MediaWiki XML export'
                 : fsBrowserTarget === 'fanwikiImages' ? 'Select an images folder'
-                : fsBrowserTarget === 'attachImages' ? 'Select an images folder'
                 : undefined
             }
             onSelect={(path) => {
               if (fsBrowserTarget === 'zim') setZimPath(path);
               else if (fsBrowserTarget === 'fanwikiXml') { setFanwikiXmlPath(path); setFanwikiInfo(null); }
               else if (fsBrowserTarget === 'fanwikiImages') setFanwikiImagesDir(path);
-              else if (fsBrowserTarget === 'attachImages') setAttachImagesDir(path);
             }}
           />
 
