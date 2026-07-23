@@ -1,7 +1,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useCallback, useContext, useState, useEffect, ReactNode } from 'react';
 import { locales } from '@/i18n';
 
 type Messages = Record<string, any>;
@@ -150,7 +150,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   }, [supportedLanguages, defaultLanguage]);
 
   // Update language and load new messages
-  const setLanguage = async (lang: string) => {
+  const setLanguage = useCallback(async (lang: string) => {
     try {
       console.log('Setting language to:', lang);
       const validLanguage = Object.keys(supportedLanguages).includes(lang as any) ? lang : defaultLanguage;
@@ -173,7 +173,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('Failed to set language:', error);
     }
-  };
+  }, [defaultLanguage, supportedLanguages]);
 
   if (isLoading) {
     return (

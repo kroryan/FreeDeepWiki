@@ -134,8 +134,8 @@ export default function ProcessedProjects({
 
   const projectHref = (project: ProcessedProject): string => {
     if (project.repo_type === 'zim') return `/zim/${project.id}`;
-    if (project.status === 'imported' && project.start_url) {
-      return `/?resume_fanwiki=${encodeURIComponent(project.start_url)}`;
+    if (project.status === 'imported') {
+      return `/fanwiki/${encodeURIComponent(project.id)}`;
     }
     const query = new URLSearchParams({
       type: project.repo_type,

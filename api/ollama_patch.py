@@ -18,6 +18,20 @@ logger = logging.getLogger(__name__)
 DEFAULT_OLLAMA_QUERY_MAX_TOKENS = 1800
 
 
+def normalize_ollama_host(ollama_host: str | None = None) -> str:
+    """Return a usable Ollama base URL even for common shell shorthand.
+
+    ``OLLAMA_HOST=192.168.1.12`` is accepted by Ollama's own CLI, but
+    ``requests`` requires a scheme. Keeping normalization here makes direct
+    uvicorn/development runs behave like the standalone launcher, which
+    already passes a fully-qualified endpoint.
+    """
+    host = (ollama_host or os.getenv("OLLAMA_HOST") or "http://localhost:11434").strip()
+    if "://" not in host:
+        host = f"http://{host}"
+    return host.removesuffix("/api").rstrip("/")
+
+
 def prepare_ollama_embedding_query(
     text: str,
     max_tokens: int | None = None,
@@ -98,9 +112,7 @@ def check_ollama_model_exists(model_name: str, ollama_host: str = None) -> bool:
         ollama_host = os.getenv("OLLAMA_HOST", "http://localhost:11434")
     
     try:
-        # Remove /api prefix if present and add it back
-        if ollama_host.endswith('/api'):
-            ollama_host = ollama_host[:-4]
+        ollama_host = normalize_ollama_host(ollama_host)
         
         response = requests.get(f"{ollama_host}/api/tags", timeout=5)
         if response.status_code == 200:
@@ -145,9 +157,7 @@ class OllamaDocumentProcessor(DataComponent):
         self.embedder = embedder
         self.model_name = model_name
         self.batch_size = max(1, batch_size)
-        self.ollama_host = (
-            ollama_host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
-        ).removesuffix("/api").rstrip("/")
+        self.ollama_host = normalize_ollama_host(ollama_host)
         self.request_timeout = request_timeout or float(
             os.getenv("OLLAMA_REQUEST_TIMEOUT", "1800")
         )

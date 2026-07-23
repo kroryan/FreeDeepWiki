@@ -2,6 +2,7 @@ from adalflow.core.types import Document
 
 from api.ollama_patch import (
     OllamaDocumentProcessor,
+    normalize_ollama_host,
     prepare_ollama_embedding_query,
 )
 
@@ -53,6 +54,11 @@ def test_ollama_embeddings_use_native_batches(monkeypatch):
     }
     assert calls[1][1]["input"] == ["three"]
     assert all(len(document.vector) == 2 for document in result)
+
+
+def test_ollama_host_without_scheme_is_normalized():
+    assert normalize_ollama_host("192.168.1.12") == "http://192.168.1.12"
+    assert normalize_ollama_host("http://localhost:11434/api") == "http://localhost:11434"
 
 
 def test_short_retrieval_query_is_unchanged():

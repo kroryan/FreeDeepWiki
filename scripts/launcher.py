@@ -6,6 +6,7 @@ import threading
 import time
 import webbrowser
 import shutil
+import signal
 from pathlib import Path
 
 # BASE_DIR is sys._MEIPASS if compiled with PyInstaller, else the project root directory
@@ -312,7 +313,14 @@ def main():
     print("Press Ctrl+C in this terminal window to stop the application.")
     print("=" * 60)
     
-    # Keep the main thread running and monitor processes
+    # Keep the main thread running and monitor processes. Desktop/session
+    # shutdown normally sends SIGTERM rather than an interactive Ctrl+C. Turn
+    # that into the same controlled path so the bundled Next.js child is
+    # always terminated instead of surviving as an orphan server.
+    def _handle_shutdown_signal(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
     try:
         while True:
             if node_process.poll() is not None:

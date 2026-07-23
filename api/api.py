@@ -4,9 +4,10 @@ import io
 import shutil
 import zipfile
 import logging
+import mimetypes
 from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, HTMLResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, HTMLResponse, StreamingResponse
 from typing import List, Optional, Dict, Any, Literal
 import json
 from datetime import datetime, timezone
@@ -1805,9 +1806,13 @@ async def ws_website_crawl(websocket: WebSocket):
 
         from api.data_pipeline import _walk_repo_tree
         tree, _ = await asyncio.to_thread(_walk_repo_tree, result["local_dir"])
+        library_entry = await asyncio.to_thread(
+            fanwiki_library.get_by_start_url, result["start_url"]
+        )
 
         await websocket.send_json({
             "type": "done",
+            "id": library_entry["id"] if library_entry else None,
             "local_dir": result["local_dir"],
             "page_count": result["page_count"],
             "tree": tree,
@@ -2095,6 +2100,68 @@ async def fanwiki_attach_images(request: FanwikiAttachImagesRequest):
         "images_attached": result.images_attached,
         "images_still_missing": result.images_still_missing,
     }
+
+
+def _get_fanwiki_entry_or_404(fanwiki_id: str) -> Dict:
+    entry = fanwiki_library.get(fanwiki_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Imported fanwiki not found")
+    return entry
+
+
+@app.get("/api/fanwiki/{fanwiki_id}")
+async def get_fanwiki_metadata(fanwiki_id: str):
+    """Metadata for the direct XML-wiki reader.
+
+    Importing a MediaWiki dump already produces readable Markdown articles;
+    generating an LLM summary wiki is optional and must not be a prerequisite
+    for opening that imported source.
+    """
+    return _get_fanwiki_entry_or_404(fanwiki_id)
+
+
+@app.get("/api/fanwiki/{fanwiki_id}/index")
+async def get_fanwiki_index(
+    fanwiki_id: str,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(500, ge=1, le=2000),
+):
+    _get_fanwiki_entry_or_404(fanwiki_id)
+    return await asyncio.to_thread(fanwiki_library.page_index, fanwiki_id, offset, limit)
+
+
+@app.get("/api/fanwiki/{fanwiki_id}/search")
+async def search_fanwiki(
+    fanwiki_id: str,
+    q: str = Query(..., min_length=1),
+    limit: int = Query(30, ge=1, le=100),
+):
+    _get_fanwiki_entry_or_404(fanwiki_id)
+    return await asyncio.to_thread(fanwiki_library.search, fanwiki_id, q, limit)
+
+
+@app.get("/api/fanwiki/{fanwiki_id}/page")
+async def get_fanwiki_page(fanwiki_id: str, path: str = Query(..., min_length=1)):
+    _get_fanwiki_entry_or_404(fanwiki_id)
+    try:
+        return await asyncio.to_thread(fanwiki_library.read_page, fanwiki_id, path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Fanwiki page not found: {path}")
+
+
+@app.get("/api/fanwiki/{fanwiki_id}/asset")
+async def get_fanwiki_asset(fanwiki_id: str, path: str = Query(..., min_length=1)):
+    _get_fanwiki_entry_or_404(fanwiki_id)
+    try:
+        asset_path = await asyncio.to_thread(fanwiki_library.resolve_asset, fanwiki_id, path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail=f"Fanwiki asset not found: {path}")
+    media_type = mimetypes.guess_type(asset_path)[0] or "application/octet-stream"
+    return FileResponse(
+        asset_path,
+        media_type=media_type,
+        headers={"X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.websocket("/ws/vuln_scan")

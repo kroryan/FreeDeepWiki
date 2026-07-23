@@ -315,7 +315,7 @@ export default function Home() {
     setFanwikiProgressPercent(0);
     try {
       const importWebSocketUrl = await getBackendWebSocketUrl('/ws/fanwiki/import');
-      const result = await new Promise<{ start_url: string; page_count: number; image_count: number; links_resolved: number }>((resolve, reject) => {
+      const result = await new Promise<{ id: string; start_url: string; page_count: number; image_count: number; links_resolved: number }>((resolve, reject) => {
         const ws = new WebSocket(importWebSocketUrl);
         ws.onopen = () => {
           ws.send(JSON.stringify({
@@ -335,7 +335,11 @@ export default function Home() {
               // showing the bar full rather than snapping it back to 0.
               if (msg.percent != null) setFanwikiProgressPercent(msg.percent);
             } else if (msg.type === 'done') {
-              resolve(msg);
+              if (!msg.id) {
+                reject(new Error('La importación terminó, pero no se pudo registrar la wiki.'));
+              } else {
+                resolve(msg);
+              }
               ws.close();
             } else if (msg.type === 'error') {
               reject(new Error(msg.message || 'Fallo al importar el XML'));
@@ -355,11 +359,12 @@ export default function Home() {
       setFanwikiProgressMsg(
         `Importadas ${result.page_count} página(s), ${result.image_count} imagen(es), ${result.links_resolved} enlace(s) resueltos.`
       );
-      setPendingFanwikiStartUrl(result.start_url);
-      setDetectedInputType('fanwiki');
       setProjectsListKey((k) => k + 1);
       setIsFanwikiModalOpen(false);
-      setIsConfigModalOpen(true);
+      // A MediaWiki XML dump is already a complete readable wiki. Open its
+      // direct reader immediately; LLM generation remains available there as
+      // an optional action instead of blocking access behind a config modal.
+      router.push(`/fanwiki/${encodeURIComponent(result.id)}`);
     } catch (e: unknown) {
       setFanwikiError(e instanceof Error ? e.message : 'Fallo al importar el XML');
     } finally {

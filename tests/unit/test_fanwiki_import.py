@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from api import fanwiki_library
 from api.fanwiki_import import import_dump, inspect_dump
 
@@ -57,6 +59,7 @@ def test_library_discovers_legacy_import_and_deletes_only_verified_source(
     imported_dir = repos_dir / "website_legacy.test"
     imported_dir.mkdir(parents=True)
     (imported_dir / "page.md").write_text("content", encoding="utf-8")
+    (imported_dir / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
     (imported_dir / "_site_meta.json").write_text(
         json.dumps(
             {
@@ -97,8 +100,47 @@ def test_library_discovers_legacy_import_and_deletes_only_verified_source(
     assert entries[0]["repo"] == "legacy.test"
     assert entries[0]["status"] == "imported"
     assert entries[0]["page_count"] == 1
+    entry_id = entries[0]["id"]
+
+    metadata = fanwiki_library.get(entry_id)
+    assert metadata is not None
+    assert metadata["main_page_path"] == "page.md"
+    assert fanwiki_library.get_by_start_url(
+        "https://legacy.test/wiki/Main_Page"
+    )["id"] == entry_id
+    assert fanwiki_library.page_index(entry_id)["entries"][0]["title"] == "Page"
+    assert fanwiki_library.search(entry_id, "pag")[0]["path"] == "page.md"
+    assert fanwiki_library.read_page(entry_id, "page.md")["content"] == "content"
+    assert fanwiki_library.resolve_asset(entry_id, "logo.png") == str(
+        imported_dir / "logo.png"
+    )
+    with pytest.raises(FileNotFoundError):
+        fanwiki_library.read_page(entry_id, "../outside.md")
+    with pytest.raises(FileNotFoundError):
+        fanwiki_library.resolve_asset(entry_id, "../outside.png")
 
     assert fanwiki_library.delete("https://normal.test") is False
     assert website_dir.is_dir()
     assert fanwiki_library.delete("https://legacy.test/wiki/Main_Page") is True
     assert not imported_dir.exists()
+
+
+def test_reader_markdown_removes_mediawiki_layout_but_keeps_content():
+    source = """<!-- editor note -->
+{| style="width: 100%"
+| style="padding: 1em" | Welcome to **EVE**
+|-
+= Navigation =
+| [https://example.test External page]
+|}
+<inputbox>
+type=search2
+</inputbox>
+"""
+    rendered = fanwiki_library._reader_markdown(source)
+    assert "editor note" not in rendered
+    assert "style=" not in rendered
+    assert "inputbox" not in rendered
+    assert "Welcome to **EVE**" in rendered
+    assert "# Navigation" in rendered
+    assert "[External page](https://example.test)" in rendered

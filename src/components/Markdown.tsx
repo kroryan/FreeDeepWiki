@@ -17,6 +17,12 @@ interface MarkdownProps {
   // (see the `a` component below) -- callers rendering content that never
   // has these, if any, can omit it.
   repoInfo?: RepoInfo;
+  // Direct readers (currently imported MediaWiki XML) can keep relative
+  // article links inside the app instead of opening a nonexistent filesystem
+  // URL in a new tab.
+  resolveInternalLink?: (href: string) => string | null;
+  onInternalLink?: (target: string) => void;
+  resolveImageUrl?: (src: string) => string;
 }
 
 // Matches a "Sources: [README.md:1-30]()" style citation's link TEXT (the
@@ -40,7 +46,13 @@ function parseFileCitation(children: React.ReactNode): string | null {
   return match ? match[1] : null;
 }
 
-const Markdown: React.FC<MarkdownProps> = ({ content, repoInfo }) => {
+const Markdown: React.FC<MarkdownProps> = ({
+  content,
+  repoInfo,
+  resolveInternalLink,
+  onInternalLink,
+  resolveImageUrl,
+}) => {
   const [openCodeFile, setOpenCodeFile] = useState<string | null>(null);
   // Define markdown components
   const MarkdownComponents: React.ComponentProps<typeof ReactMarkdown>['components'] = {
@@ -121,6 +133,22 @@ const Markdown: React.FC<MarkdownProps> = ({ content, repoInfo }) => {
           </a>
         );
       }
+      const internalTarget = href ? resolveInternalLink?.(href) : null;
+      if (internalTarget && onInternalLink) {
+        return (
+          <a
+            href={`?page=${encodeURIComponent(internalTarget)}`}
+            className="text-[var(--link-color)] hover:text-[var(--accent-primary)] border-b border-[var(--link-color)]/35 hover:border-[var(--accent-primary)] no-underline font-medium transition-colors cursor-pointer"
+            onClick={(event) => {
+              event.preventDefault();
+              onInternalLink(internalTarget);
+            }}
+            {...props}
+          >
+            {children}
+          </a>
+        );
+      }
       return (
         <a
           href={href}
@@ -131,6 +159,22 @@ const Markdown: React.FC<MarkdownProps> = ({ content, repoInfo }) => {
         >
           {children}
         </a>
+      );
+    },
+    img({ src, alt, ...props }: React.ImgHTMLAttributes<HTMLImageElement>) {
+      const resolvedSrc =
+        typeof src === 'string' && resolveImageUrl ? resolveImageUrl(src) : src;
+      return (
+        // Imported wiki images have arbitrary dimensions. Constrain them to
+        // the reader column while preserving their native aspect ratio.
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={resolvedSrc}
+          alt={alt || ''}
+          className="max-w-full h-auto rounded-md"
+          loading="lazy"
+          {...props}
+        />
       );
     },
     blockquote({ children, ...props }: { children?: React.ReactNode }) {
