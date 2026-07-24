@@ -23,13 +23,19 @@ interface ProcessedProjectsProps {
   maxItems?: number;
   className?: string;
   messages?: Record<string, Record<string, string>>; // Translation messages with proper typing
+  // When set (e.g. "60vh"), the project list/grid scrolls inside a bounded box
+  // instead of growing the whole page -- used on the home page so every
+  // available wiki is reachable without leaving for /wiki/projects. Leave
+  // unset for the full /wiki/projects page, which should use page-level scroll.
+  scrollableMaxHeight?: string;
 }
 
-export default function ProcessedProjects({ 
-  showHeader = true, 
-  maxItems, 
+export default function ProcessedProjects({
+  showHeader = true,
+  maxItems,
   className = "",
-  messages 
+  messages,
+  scrollableMaxHeight
 }: ProcessedProjectsProps) {
   const [projects, setProjects] = useState<ProcessedProject[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -212,7 +218,10 @@ export default function ProcessedProjects({
       {error && <p className="text-[var(--highlight)]">{t('errorLoading')} {error}</p>}
 
       {!isLoading && !error && filteredProjects.length > 0 && (
-        <div className={viewMode === 'card' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4' : 'space-y-2'}>
+        <div
+          className={viewMode === 'card' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4' : 'space-y-2'}
+          style={scrollableMaxHeight ? { maxHeight: scrollableMaxHeight, overflowY: 'auto', paddingRight: '0.25rem' } : undefined}
+        >
             {filteredProjects.map((project) => (
             viewMode === 'card' ? (
               <div key={project.id} className="relative p-4 border border-[var(--border-color)] rounded-lg bg-[var(--card-bg)] shadow-sm hover:shadow-md transition-all duration-200 hover:scale-[1.02]">

@@ -1256,13 +1256,15 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Show processed projects */}
+              {/* Show processed projects -- all of them, in a scrollable box so
+                  every wiki is reachable from the home page without having to
+                  open /wiki/projects to see the rest. */}
               <ProcessedProjects
                 key={projectsListKey}
                 showHeader={false}
-                maxItems={6}
                 messages={messages}
                 className="w-full"
+                scrollableMaxHeight="60vh"
               />
             </div>
           ) : (
