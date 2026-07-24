@@ -8,7 +8,7 @@ import tempfile
 import zipfile
 import logging
 import mimetypes
-from fastapi import FastAPI, HTTPException, Query, WebSocket, Depends
+from fastapi import FastAPI, HTTPException, Query, WebSocket, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, HTMLResponse, StreamingResponse
 from starlette.background import BackgroundTask
@@ -253,6 +253,7 @@ from api.config import get_model_config as get_provider_model_config
 from api.provider_streaming import stream_provider_response
 from api.prompts import PAGE_EDIT_AI_SYSTEM_PROMPT
 from api.security import sanitize_error_message
+from api.mcp_server import handle_request as mcp_handle_request, get_runtime_token as mcp_runtime_token
 
 @app.get("/lang/config")
 async def get_lang_config():
@@ -2729,6 +2730,47 @@ async def health_check():
         "timestamp": datetime.now().isoformat(),
         "service": "hackdeepwiki-api"
     }
+
+# ---- MCP server (Fase 1) ---------------------------------------------------
+# Exposes the wiki of a generated repo as MCP tools (search_wiki/read_doc/
+# list_wiki_structure/read_file/ask_repo) over JSON-RPC 2.0. Implemented
+# from stdlib -- no `mcp` pip dependency (portable). Gated by a runtime
+# token when HACKDEEPWIKI_MCP_TOKEN is set; local-first default is opt-in
+# (no token => auth off, like WIKI_AUTH_MODE).
+@app.post("/mcp")
+async def mcp_endpoint(request: Request):
+    """Single-request JSON-RPC 2.0 entrypoint for MCP clients. A client
+    POSTs one request, gets one response. Supports initialize / tools/list /
+    tools/call. Streaming/SSE is out of scope for the local-first app."""
+    try:
+        req = await request.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=400,
+            content={"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": f"Parse error: {sanitize_error_message(str(e))}"}},
+        )
+    auth = request.headers.get("authorization") or request.headers.get("Authorization")
+    # handle_request does the token check itself; we pass the header through.
+    resp = mcp_handle_request(req, auth_header=auth)
+    status = 200
+    if "error" in resp and resp["error"].get("code") == -32001:
+        status = 401
+    return JSONResponse(status_code=status, content=resp)
+
+
+@app.get("/mcp/token")
+async def mcp_token():
+    """Surface the runtime MCP token so the UI can show it for the user to
+    paste into their MCP client config. The token is per-process unless
+    HACKDEEPWIKI_MCP_TOKEN is set explicitly (in which case that value is
+    returned)."""
+    token = mcp_runtime_token()
+    # Don't echo the full token over an unauthenticated endpoint when one
+    # was explicitly configured -- that would defeat gating. Local-first
+    # (auto) mode returns it in full since it's meant to be copied.
+    if os.environ.get("HACKDEEPWIKI_MCP_TOKEN"):
+        return {"configured": True, "token": token, "hint": "Set via HACKDEEPWIKI_MCP_TOKEN env."}
+    return {"configured": False, "token": token, "hint": "Per-process token; rotate on restart. Set HACKDEEPWIKI_MCP_TOKEN to pin it."}
 
 @app.get("/")
 async def root():

@@ -1,0 +1,296 @@
+"""MCP tool implementations for HackDeepWiki (Fase 1).
+
+Each tool here is a plain Python callable with a JSON-Schema input shape, so
+``api.mcp_server`` can expose them over MCP's JSON-RPC (initialize /
+tools/list / tools/call) WITHOUT depending on the ``mcp`` pip package --
+that package pulls in pydantic, httpx, and an SSE stack whose packaging
+(PyInstaller) risk is exactly what the portability principle forbids. The
+MCP wire protocol is JSON-RPC 2.0; we speak the subset we need from stdlib.
+
+Tools mirror OpenDeepWiki's McpGlobalTools/McpRepositoryTools surface but
+backed by HackDeepWiki's existing wiki-cache + file-tree + RAG:
+
+  search_wiki        -- full-text search over a repo's generated wiki pages
+  read_doc           -- read one generated wiki page by path
+  list_wiki_structure -- the wiki's page tree (so an agent can navigate)
+  read_file          -- read a source file from the repo (READ_FILE parity)
+  ask_repo           -- ask a question against the repo's RAG index
+
+All tools are read-only (the MCP server exposes a wiki for consumption, not
+mutation), so a leaked runtime token can't corrupt generated content.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any, Callable, Optional
+
+logger = logging.getLogger(__name__)
+
+# A tool is: name -> (description, input_schema, handler(args)->str)
+TOOL_REGISTRY: dict[str, dict[str, Any]] = {}
+
+
+def _tool(name: str, description: str, schema: dict[str, Any]):
+    """Decorator registering a handler under ``name`` with its input schema."""
+
+    def deco(fn: Callable[..., str]):
+        TOOL_REGISTRY[name] = {
+            "description": description,
+            "inputSchema": schema,
+            "handler": fn,
+        }
+        return fn
+
+    return deco
+
+
+def _resolve_cache_dir(owner: str, repo: str, repo_type: str, language: str) -> Optional[str]:
+    """Locate the on-disk wiki-cache directory for a repo/language, without
+    importing the full app (keeps this importable in isolation). Returns
+    None if no release exists."""
+    # Mirror api.api._cache_dir / read_wiki_cache's on-disk layout without
+    # the heavy WikiCacheData import: the cache lives under
+    # <data_root>/wikicache/<type>/<owner>/<repo>/<lang>/.
+    try:
+        from api.data_root import get_data_root
+        base = os.path.join(get_data_root(), "wikicache", repo_type or "github", owner, repo, language)
+        return base if os.path.isdir(base) else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"could not resolve cache dir for {owner}/{repo}: {e}")
+        return None
+
+
+def _list_cache_files(owner: str, repo: str, repo_type: str, language: str) -> list[str]:
+    """All .json cache files for a repo/language, newest-first."""
+    import glob
+    base = _resolve_cache_dir(owner, repo, repo_type, language)
+    if not base:
+        return []
+    files = glob.glob(os.path.join(base, "*.json"))
+    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    return files
+
+
+def _load_latest_cache(owner: str, repo: str, repo_type: str, language: str) -> Optional[dict]:
+    import json
+    for path in _list_cache_files(owner, repo, repo_type, language):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"could not read cache {path}: {e}")
+    return None
+
+
+@_tool(
+    "search_wiki",
+    "Full-text search over a repository's generated wiki pages. Returns matching page titles with a short snippet each.",
+    {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string", "description": "Repository owner"},
+            "repo": {"type": "string", "description": "Repository name"},
+            "query": {"type": "string", "description": "Search query"},
+            "language": {"type": "string", "description": "Wiki language code (default: en)", "default": "en"},
+            "repo_type": {"type": "string", "description": "github/gitlab/bitbucket/local/website (default: github)", "default": "github"},
+            "max_results": {"type": "integer", "description": "Max pages to return (default 5)", "default": 5},
+        },
+        "required": ["owner", "repo", "query"],
+    },
+)
+def search_wiki(owner: str, repo: str, query: str, language: str = "en",
+                repo_type: str = "github", max_results: int = 5) -> str:
+    cache = _load_latest_cache(owner, repo, repo_type, language)
+    if not cache:
+        return f"No generated wiki found for {owner}/{repo} ({language}). Generate one first."
+    pages = cache.get("pages", [])
+    if isinstance(cache.get("file_tree"), dict) and "pages" not in cache:
+        # some layouts nest pages under file_tree
+        pages = cache.get("file_tree", {}).get("pages", pages)
+    q = (query or "").lower()
+    terms = [t for t in q.split() if t]
+    scored = []
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        title = str(page.get("title") or page.get("name") or "")
+        content = str(page.get("content") or page.get("markdown") or "")
+        text = (title + "\n" + content).lower()
+        score = sum(1 for t in terms if t in text)
+        if score > 0:
+            snippet = content[:200].replace("\n", " ").strip()
+            scored.append((score, title, snippet, page.get("path") or page.get("id") or title))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    if not scored:
+        return f"No wiki pages matched '{query}' in {owner}/{repo}."
+    lines = [f"Found {len(scored)} matching page(s) in {owner}/{repo}:"]
+    for _score, title, snippet, path in scored[: max(1, max_results)]:
+        lines.append(f"\n## {title} ({path})\n{snippet}...")
+    return "\n".join(lines)
+
+
+@_tool(
+    "read_doc",
+    "Read one generated wiki page by its path/title. Returns the full page markdown.",
+    {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+            "repo": {"type": "string"},
+            "path": {"type": "string", "description": "Page path or title (as returned by search_wiki/list_wiki_structure)"},
+            "language": {"type": "string", "default": "en"},
+            "repo_type": {"type": "string", "default": "github"},
+        },
+        "required": ["owner", "repo", "path"],
+    },
+)
+def read_doc(owner: str, repo: str, path: str, language: str = "en",
+             repo_type: str = "github") -> str:
+    cache = _load_latest_cache(owner, repo, repo_type, language)
+    if not cache:
+        return f"No generated wiki found for {owner}/{repo} ({language})."
+    pages = cache.get("pages", [])
+    target = (path or "").strip().lower()
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        cand = str(page.get("path") or page.get("id") or page.get("title") or "")
+        title = str(page.get("title") or "")
+        if target and (target == cand.lower() or target == title.lower() or target in cand.lower()):
+            content = page.get("content") or page.get("markdown") or ""
+            return f"# {title}\n\n{content}"
+    return f"Page '{path}' not found in {owner}/{repo} wiki. Use list_wiki_structure to see available pages."
+
+
+@_tool(
+    "list_wiki_structure",
+    "List the page tree of a repository's generated wiki, so an agent can navigate before reading.",
+    {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+            "repo": {"type": "string"},
+            "language": {"type": "string", "default": "en"},
+            "repo_type": {"type": "string", "default": "github"},
+        },
+        "required": ["owner", "repo"],
+    },
+)
+def list_wiki_structure(owner: str, repo: str, language: str = "en",
+                        repo_type: str = "github") -> str:
+    cache = _load_latest_cache(owner, repo, repo_type, language)
+    if not cache:
+        return f"No generated wiki found for {owner}/{repo} ({language})."
+    pages = cache.get("pages", [])
+    tree = cache.get("file_tree")
+    lines = [f"Wiki structure for {owner}/{repo} ({language}):"]
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        title = str(page.get("title") or page.get("name") or "(untitled)")
+        path = str(page.get("path") or page.get("id") or title)
+        lines.append(f"  - {title}  [{path}]")
+    if tree:
+        lines.append(f"\n(file_tree root keys: {list(tree.keys()) if isinstance(tree, dict) else type(tree).__name__})")
+    return "\n".join(lines) if len(lines) > 1 else f"Wiki for {owner}/{repo} has no pages."
+
+
+@_tool(
+    "read_file",
+    "Read a source file from the repository (relative path from repo root). Returns file content. Use when a wiki snippet isn't enough.",
+    {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+            "repo": {"type": "string"},
+            "path": {"type": "string", "description": "File path relative to repo root, e.g. api/main.py"},
+            "repo_type": {"type": "string", "default": "github"},
+        },
+        "required": ["owner", "repo", "path"],
+    },
+)
+def read_file(owner: str, repo: str, path: str, repo_type: str = "github") -> str:
+    # Resolve the local clone path the same way the app does (repos/<owner>_<repo>).
+    try:
+        from api.data_root import get_data_root
+        from api.data_pipeline import get_local_file_content
+        clone_dir = os.path.join(get_data_root(), "repos", f"{owner}_{repo}")
+        if not os.path.isdir(clone_dir):
+            return f"Repository {owner}/{repo} is not cloned locally. Generate its wiki first."
+        return get_local_file_content(clone_dir, path)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"read_file failed for {owner}/{repo}/{path}: {e}")
+        return f"Could not read {path} from {owner}/{repo}: {e}"
+
+
+@_tool(
+    "ask_repo",
+    "Ask a natural-language question about a repository, answered against its RAG index (semantic search over the embedded code/docs). Use this when search_wiki (keyword) isn't precise enough.",
+    {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string"},
+            "repo": {"type": "string"},
+            "question": {"type": "string"},
+            "repo_type": {"type": "string", "default": "github"},
+        },
+        "required": ["owner", "repo", "question"],
+    },
+)
+def ask_repo(owner: str, repo: str, question: str, repo_type: str = "github") -> str:
+    """Returns the top retrieved context chunks for the question (the MCP
+    server answers with evidence, not an LLM-generated answer, so the
+    calling agent stays in control of synthesis and there's no recursive
+    model call inside a tool)."""
+    try:
+        from api.rag import RAG
+        from api.data_pipeline import DatabaseManager
+        # DatabaseManager.prepare_retriever loads/creates the embedding index
+        # for owner/repo exactly as the chat path does.
+        mgr = DatabaseManager()
+        mgr.prepare_retriever(f"{owner}/{repo}", repo_type=repo_type)
+        rag = RAG(
+            db=mgr.db,
+            transformed_docs=mgr.db.state.get("transformed_docs", [])
+            if hasattr(mgr.db, "state") else [],
+            embedder=mgr.db,
+            retriever=None,
+        )
+        retrieved = rag.call(question)
+        if not retrieved or not retrieved[0].documents:
+            return f"No relevant context found in {owner}/{repo} for: {question}"
+        chunks = retrieved[0].documents[:5]
+        lines = [f"Top context chunks for '{question}' in {owner}/{repo}:"]
+        for i, d in enumerate(chunks, 1):
+            md = getattr(d, "meta_data", {}) or {}
+            fp = md.get("file_path", "?")
+            text = (getattr(d, "text", "") or "")[:400].replace("\n", " ")
+            lines.append(f"\n[{i}] {fp}: {text}")
+        return "\n".join(lines)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"ask_repo failed for {owner}/{repo}: {e}")
+        return f"Could not query {owner}/{repo} RAG index: {e}. Generate the wiki first."
+
+
+def list_tools() -> list[dict[str, Any]]:
+    """MCP tools/list response shape."""
+    return [
+        {
+            "name": name,
+            "description": t["description"],
+            "inputSchema": t["inputSchema"],
+        }
+        for name, t in TOOL_REGISTRY.items()
+    ]
+
+
+def call_tool(name: str, arguments: dict[str, Any]) -> str:
+    """Invoke a registered tool. Returns its text result. Raises ValueError
+    for an unknown tool (the server maps that to a JSON-RPC error)."""
+    entry = TOOL_REGISTRY.get(name)
+    if not entry:
+        raise ValueError(f"Unknown tool: {name}")
+    handler = entry["handler"]
+    return handler(**(arguments or {}))
