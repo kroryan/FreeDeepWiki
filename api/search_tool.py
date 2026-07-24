@@ -5,15 +5,28 @@ connection). Both the "page + related pages" initial-context builder and the
 agent's SEARCH_WIKI tool call this same function, so a .zim and a normal
 repo behave identically from the chat's point of view.
 """
+import asyncio
+import json
 import logging
 import os
-from typing import Callable, Optional, TypedDict
+import re
+from typing import Any, Awaitable, Callable, Optional, TypedDict
 from urllib.parse import quote
 
-from api import zim_library, zim_reader
+from api import mcp_client, zim_library, zim_reader
 from api.data_pipeline import get_file_content
 
 logger = logging.getLogger(__name__)
+
+# A tool handler is an async callable taking either a single string (the
+# built-in SEARCH_WIKI/READ_FILE, whose textual convention is one line) or
+# a dict of named arguments (external MCP tools, which can be multi-arg).
+# Each handler normalizes its input itself (see _coerce_str_arg /
+# _coerce_dict_arg) so the agent loop can pass whatever shape it has -- a
+# string from the textual sniff path, or the full args dict from the native
+# tool-calling path -- without knowing which kind of tool it's dispatching.
+ToolHandler = Callable[[Any], Awaitable[str]]
+
 
 # Tool name -> the textual prefix the model emits to invoke it (see
 # api/agent_loop.py's multi-prefix sniff_and_relay) and a short label used
@@ -37,16 +50,74 @@ TOOL_DESCRIPTIONS = {
 }
 
 
-def build_tools_block(tools: dict[str, Callable[[str], str]], subject: str) -> str:
+def _coerce_str_arg(arg: Any) -> str:
+    """Built-in tool handlers conceptually take one string (the search query
+    or file path). The native tool-calling path passes the full args dict, so
+    coerce a dict back to its first value -- mirroring the old
+    `next(iter(args.values()), "")` collapse -- and anything else to str."""
+    if isinstance(arg, dict):
+        return next(iter(arg.values()), "") or ""
+    if arg is None:
+        return ""
+    return str(arg)
+
+
+def _coerce_dict_arg(arg: Any, input_schema: dict) -> dict:
+    """External MCP tool handlers take a dict of named arguments. The textual
+    sniff path only ever has a single line, so: if the model emitted valid
+    JSON, parse it; otherwise wrap the bare string into the schema's first
+    property (the most common single-arg case) so a textual call still works."""
+    if isinstance(arg, dict):
+        return arg
+    if arg is None:
+        return {}
+    if isinstance(arg, str):
+        s = arg.strip()
+        if s[:1] in "{[":
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:  # noqa: BLE001 - fall through to single-string wrap
+                pass
+        props = (input_schema or {}).get("properties", {}) if isinstance(input_schema, dict) else {}
+        first_prop = next(iter(props), None) if isinstance(props, dict) else None
+        if first_prop:
+            return {first_prop: arg}
+        return {"input": arg}
+    return {}
+
+
+def _sanitize_tool_name(name: str) -> str:
+    """OpenAI/Anthropic function names must match ^[a-zA-Z0-9_-]{1,64}$.
+    Replace anything else with '_' and cap length; never return empty."""
+    clean = re.sub(r"[^a-zA-Z0-9_-]", "_", str(name or "")).strip("_")
+    return (clean[:64] or "tool")
+
+
+def build_tools_block(
+    tools: dict[str, ToolHandler],
+    subject: str,
+    external_tools: Optional[list[dict]] = None,
+) -> str:
     """Render the per-tool usage lines TOOL_CALLING_INSTRUCTIONS lists,
     limited to whatever's actually available for this chat (e.g. READ_FILE
-    only exists for repo chats, never .zim -- see resolve_tool_calling)."""
+    only exists for repo chats, never .zim -- see resolve_tool_calling).
+
+    External MCP tools (when the user has configured servers) are appended
+    after the built-ins with their own one-line usage: the textual convention
+    for a multi-arg external tool is `PREFIX: <json arguments object>`."""
     lines = []
     for prefix in tools:
         template = TOOL_DESCRIPTIONS.get(prefix)
-        if not template:
-            continue
-        lines.append(template.format(SEARCH_WIKI=SEARCH_WIKI, READ_FILE=READ_FILE, subject=subject))
+        if template:
+            lines.append(template.format(SEARCH_WIKI=SEARCH_WIKI, READ_FILE=READ_FILE, subject=subject))
+    for ext in external_tools or []:
+        desc = (ext.get("description") or "").strip().splitlines()[0:1]
+        desc_str = desc[0] if desc else f"External tool {ext.get('tool_name')}"
+        # Cap so the tools block stays reasonable for small context windows.
+        desc_str = desc_str[:160]
+        lines.append(f'{ext["prefix"]} <json arguments object>  -- {desc_str}')
     return "\n".join(lines)
 
 
@@ -89,9 +160,16 @@ _NATIVE_TOOL_DESCRIPTIONS = {
 }
 
 
-def build_tool_schemas_anthropic(tools: dict[str, Callable[[str], str]], subject: str) -> list[dict]:
+def build_tool_schemas_anthropic(
+    tools: dict[str, ToolHandler],
+    subject: str,
+    external_tools: Optional[list[dict]] = None,
+) -> list[dict]:
     """Anthropic Messages API `tools` shape for whichever prefixes are
-    actually on offer for this chat (see resolve_tool_calling)."""
+    actually on offer for this chat (see resolve_tool_calling). External
+    MCP tools are appended with their own JSON schema (from the server's
+    inputSchema) so the native path can call them with full multi-arg
+    input instead of the single-string built-in shape."""
     schemas = []
     for prefix in tools:
         name = _NATIVE_TOOL_NAMES.get(prefix)
@@ -107,12 +185,27 @@ def build_tool_schemas_anthropic(tools: dict[str, Callable[[str], str]], subject
                 "required": [param],
             },
         })
+    for ext in external_tools or []:
+        input_schema = ext.get("input_schema")
+        if not isinstance(input_schema, dict) or not input_schema:
+            input_schema = {"type": "object", "properties": {}}
+        schemas.append({
+            "name": ext["native_name"],
+            "description": (ext.get("description") or f"External MCP tool {ext.get('tool_name')}")[:1024],
+            "input_schema": input_schema,
+        })
     return schemas
 
 
-def build_tool_schemas_openai(tools: dict[str, Callable[[str], str]], subject: str) -> list[dict]:
+def build_tool_schemas_openai(
+    tools: dict[str, ToolHandler],
+    subject: str,
+    external_tools: Optional[list[dict]] = None,
+) -> list[dict]:
     """OpenAI-compatible chat-completions `tools` shape (function-calling)
-    for the same prefixes -- used for openai/openai_custom/litellm."""
+    for the same prefixes -- used for openai/openai_custom/litellm. External
+    MCP tools are appended with their own JSON schema (from the server's
+    inputSchema) so the native path can call them with full multi-arg input."""
     schemas = []
     for prefix in tools:
         name = _NATIVE_TOOL_NAMES.get(prefix)
@@ -131,14 +224,30 @@ def build_tool_schemas_openai(tools: dict[str, Callable[[str], str]], subject: s
                 },
             },
         })
+    for ext in external_tools or []:
+        input_schema = ext.get("input_schema")
+        if not isinstance(input_schema, dict) or not input_schema:
+            input_schema = {"type": "object", "properties": {}}
+        schemas.append({
+            "type": "function",
+            "function": {
+                "name": ext["native_name"],
+                "description": (ext.get("description") or f"External MCP tool {ext.get('tool_name')}")[:1024],
+                "parameters": input_schema,
+            },
+        })
     return schemas
 
 
 def native_tool_name_to_prefix(name: str) -> Optional[str]:
-    """Reverse of _NATIVE_TOOL_NAMES -- maps a tool_use/tool_call's `name`
-    field (e.g. "search_wiki") back to the textual prefix (e.g.
+    """Reverse of _NATIVE_TOOL_NAMES -- maps a built-in tool_use/tool_call's
+    `name` field (e.g. "search_wiki") back to the textual prefix (e.g.
     "SEARCH_WIKI:") that `tools` dicts are keyed by, so run_native_tool_chat
-    can dispatch to the same handlers resolve_tool_calling already built."""
+    can dispatch to the same handlers resolve_tool_calling already built.
+
+    External MCP tools have per-chat native names (built from server+tool),
+    so the native loop also passes an `external_name_to_prefix` map; this
+    function only handles the two built-ins."""
     for prefix, tool_name in _NATIVE_TOOL_NAMES.items():
         if tool_name == name:
             return prefix
@@ -357,7 +466,7 @@ def build_repo_context(
     return format_search_results(results)
 
 
-def resolve_tool_calling(
+async def resolve_tool_calling(
     *,
     enable_tool_calling: Optional[bool],
     is_deep_research: bool,
@@ -369,7 +478,7 @@ def resolve_tool_calling(
     repo_type: Optional[str] = None,
     token: Optional[str] = None,
     refs_sink: Optional[list] = None,
-) -> tuple[bool, dict[str, Callable[[str], str]]]:
+) -> tuple[bool, dict[str, ToolHandler], list[dict]]:
     """Shared gate + tool resolution for the agent loop (api/agent_loop.py),
     used identically by the WebSocket and HTTP chat handlers so the two
     transports can't drift on what "tool calling enabled" means or what
@@ -377,12 +486,22 @@ def resolve_tool_calling(
     multi-iteration structure/prompts) or via the
     HACKDEEPWIKI_DISABLE_AGENT_LOOP=1 env killswitch.
 
-    Returns (enabled, tools) where `tools` maps a textual prefix (e.g.
-    "SEARCH_WIKI:") to a `query -> tool_result text` handler. Every source
-    type gets SEARCH_WIKI; repo chats (never .zim -- there's no separate
-    "file" concept for a wiki entry) additionally get READ_FILE, since a
-    RAG/search hit is only ever a chunked snippet and the model sometimes
-    needs the whole file to make sense of it.
+    Returns ``(enabled, tools, external_tools)``:
+
+    * ``tools`` maps a textual prefix (e.g. "SEARCH_WIKI:") to an async
+      ``arg -> tool_result text`` handler. Every source type gets SEARCH_WIKI;
+      repo chats (never .zim -- there's no separate "file" concept for a wiki
+      entry) additionally get READ_FILE, since a RAG/search hit is only ever a
+      chunked snippet and the model sometimes needs the whole file.
+    * ``external_tools`` is a list of metadata dicts for tools from external
+      MCP servers the user has configured (see api/mcp_client.py). Each entry
+      carries the textual prefix, the sanitized native schema name, the
+      description, the server's input schema, and the server dict -- enough for
+      build_tools_block / build_tool_schemas_* to expose them on both the
+      textual and native tool-calling paths, and for the agent loop to build a
+      native_name -> prefix reverse map. Empty when no servers are configured
+      or every server is unreachable (an unreachable external server must not
+      break the chat -- the built-in tools still work).
 
     When `refs_sink` is given, every page/file a tool call actually reads
     during the conversation is appended to it too, alongside whatever the
@@ -395,25 +514,28 @@ def resolve_tool_calling(
         and os.environ.get("HACKDEEPWIKI_DISABLE_AGENT_LOOP") != "1"
     )
     if not enabled:
-        return False, {}
+        return False, {}, []
 
-    tools: dict[str, Callable[[str], str]] = {}
+    tools: dict[str, ToolHandler] = {}
 
     if is_zim:
-        def search_fn(q: str, _path=zim_path) -> str:
+        async def search_fn(arg: Any, _path=zim_path) -> str:
+            q = _coerce_str_arg(arg)
             results = search_zim(_path, q, limit=5)
             _record(refs_sink, results)
             return format_search_results(results)
         tools[SEARCH_WIKI] = search_fn
     elif request_rag is not None:
-        def search_fn(q: str, _rag=request_rag, _lang=language) -> str:
+        async def search_fn(arg: Any, _rag=request_rag, _lang=language) -> str:
+            q = _coerce_str_arg(arg)
             results = search_repo(_rag, q, language=_lang, limit=5)
             _record(refs_sink, results)
             return format_search_results(results)
         tools[SEARCH_WIKI] = search_fn
 
         if repo_url:
-            def read_file_fn(path: str, _url=repo_url, _type=repo_type, _token=token) -> str:
+            async def read_file_fn(arg: Any, _url=repo_url, _type=repo_type, _token=token) -> str:
+                path = _coerce_str_arg(arg)
                 try:
                     result = read_file(_url, _type, _token, path)
                 except Exception as e:
@@ -422,8 +544,87 @@ def resolve_tool_calling(
                 return result
             tools[READ_FILE] = read_file_fn
     else:
-        return False, {}
+        return False, {}, []
 
     if not tools:
-        return False, {}
-    return True, tools
+        return False, {}, []
+
+    external_tools = await _collect_external_tools()
+    for ext in external_tools:
+        tools[ext["prefix"]] = ext["handler"]
+
+    return True, tools, external_tools
+
+
+async def _collect_external_tools() -> list[dict]:
+    """Enumerate the user's enabled external MCP servers and build a tool
+    metadata entry per tool each one exposes. Best-effort and isolated: a
+    server that's down, slow, or returns a malformed tools/list is skipped
+    (logged) so it can never break the chat. Returns [] when MCP is unused."""
+    external_tools: list[dict] = []
+    try:
+        servers = mcp_client.list_servers()
+    except Exception as e:  # noqa: BLE001 - profile.db not ready / corrupt -> no external tools
+        logger.warning(f"MCP list_servers failed (external tools disabled): {e}")
+        return external_tools
+
+    enabled_servers = [s for s in servers if s.get("enabled")]
+    if not enabled_servers:
+        return external_tools
+
+    # Query all enabled servers concurrently so one slow server only costs its
+    # own LIST_TOOLS_TIMEOUT, not the sum of every server's latency.
+    tool_lists = await asyncio.gather(
+        *(mcp_client.list_server_tools_timed(s) for s in enabled_servers),
+        return_exceptions=False,
+    )
+
+    seen_native_names: set[str] = set()
+    for server, tool_list in zip(enabled_servers, tool_lists):
+        server_name = _sanitize_tool_name(server.get("name", "server"))
+        for tool in tool_list or []:
+            if not isinstance(tool, dict):
+                continue
+            tool_name = tool.get("name") or ""
+            if not tool_name:
+                continue
+            # Unique, schema-safe native name. Server-prefixed so two servers
+            # exposing a same-named tool don't collide; de-duped defensively.
+            native_name = f"mcp_{server_name}_{_sanitize_tool_name(tool_name)}"
+            base = native_name[:55]
+            candidate = base
+            i = 2
+            while candidate in seen_native_names:
+                suffix = f"_{i}"
+                candidate = (base[: 64 - len(suffix)]) + suffix
+                i += 1
+            seen_native_names.add(candidate)
+            input_schema = tool.get("inputSchema")
+            if not isinstance(input_schema, dict):
+                input_schema = {"type": "object", "properties": {}}
+            prefix = f"MCP_{server_name}__{_sanitize_tool_name(tool_name)}:"
+            description = tool.get("description") or f"External MCP tool {tool_name} from {server.get('name')}"
+
+            # Capture per-tool bindings in the closure defaults so the handler
+            # is self-contained and safe to call concurrently across chats.
+            def _make_handler(_server=server, _tool_name=tool_name, _schema=input_schema):
+                async def handler(arg: Any) -> str:
+                    args = _coerce_dict_arg(arg, _schema)
+                    return await mcp_client.call_server_tool(_server, _tool_name, args)
+                return handler
+
+            external_tools.append({
+                "prefix": prefix,
+                "native_name": candidate,
+                "tool_name": tool_name,
+                "server": server,
+                "description": description,
+                "input_schema": input_schema,
+                "handler": _make_handler(),
+            })
+    if external_tools:
+        logger.info(
+            "MCP external tools registered: %d from %d server(s)",
+            len(external_tools), len(enabled_servers),
+        )
+    return external_tools

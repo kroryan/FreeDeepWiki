@@ -1436,7 +1436,36 @@ IMPORTANT:
       // Extract wiki structure from response
       const xmlMatch = responseText.match(/<wiki_structure>[\s\S]*?<\/wiki_structure>/m);
       if (!xmlMatch) {
-        throw new Error('No valid XML found in response');
+        // No <wiki_structure> means the backend returned an error string
+        // instead of the XML plan (the WS/HTTP handlers in
+        // websocket_wiki.py / simple_chat.py prepend a human-readable error
+        // prefix). Surface the REAL backend message instead of the useless
+        // generic "No valid XML found in response" -- and flag embedding-pipeline
+        // failures specifically so the UI shows the embedding-error state.
+        const EMBEDDING_PREFIXES = [
+          'Error preparing retriever:',
+          'No valid document embeddings',
+          'Inconsistent embedding sizes',
+        ];
+        const isEmbeddingError = EMBEDDING_PREFIXES.some((p) => responseText.includes(p));
+        if (isEmbeddingError) {
+          setEmbeddingError(true);
+        }
+        // Take the first line that starts with a known error prefix; otherwise
+        // the first non-empty line; otherwise a trimmed snippet. Keeps the
+        // message useful without dumping a full traceback.
+        const firstErrorLine = responseText
+          .split('\n')
+          .map((l) => l.trim())
+          .find((l) => l && /^Error[:\s]/i.test(l));
+        const realMessage =
+          firstErrorLine ||
+          responseText.split('\n').map((l) => l.trim()).find((l) => l) ||
+          responseText.trim();
+        throw new Error(
+          realMessage.slice(0, 600) ||
+          'No valid XML found in response (the backend returned an unexpected response).'
+        );
       }
 
       let xmlText = xmlMatch[0];

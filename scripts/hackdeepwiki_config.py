@@ -195,13 +195,37 @@ def render(
         )
 
         previous = output.with_name(f"{output.name}.previous")
-        if previous.exists():
-            shutil.rmtree(previous)
-        if output.exists():
-            os.replace(output, previous)
+        # The backup swap (config -> config.previous) is best-effort: when the
+        # app runs from a read-only or permission-restricted data dir (e.g. an
+        # AppImage whose DATABASE isn't writable), os.replace onto
+        # config.previous raises Permission denied. Don't let that abort the
+        # whole auto-config -- drop the backup and still install the new config
+        # atomically. The caller (launcher) already falls back to default
+        # templates if the install itself can't happen.
+        try:
+            if previous.exists():
+                shutil.rmtree(previous)
+            if output.exists():
+                os.replace(output, previous)
+        except (OSError, PermissionError) as e:
+            # Can't keep a backup in this dir -- remove the old config outright
+            # so the new one can take its place. If even that fails, the
+            # os.replace(temporary, output) below will raise and the launcher
+            # falls back to bundled defaults.
+            print(f"config.previous backup skipped (non-fatal): {e}")
+            try:
+                if output.exists() and output.is_dir():
+                    shutil.rmtree(output)
+                elif output.exists():
+                    output.unlink()
+            except OSError:
+                pass
         os.replace(temporary, output)
         if previous.exists():
-            shutil.rmtree(previous)
+            try:
+                shutil.rmtree(previous)
+            except OSError:
+                pass
         return selected_model, selected_embed_model
     except BaseException:
         if temporary.exists():

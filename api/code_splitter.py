@@ -34,7 +34,9 @@ from copy import deepcopy
 from typing import List
 
 from adalflow.components.data_process import TextSplitter
+from adalflow.core.component import Component
 from adalflow.core.types import Document
+from adalflow.utils.registry import EntityMapping
 
 logger = logging.getLogger(__name__)
 
@@ -189,13 +191,27 @@ def _pack_code_blocks(text: str, chunk_chars: int, overlap_lines: int) -> List[s
     return [c for c in chunks if c.strip()]
 
 
-class CodeAwareSplitter:
+class CodeAwareSplitter(Component):
     """A drop-in replacement for adalflow's ``TextSplitter`` that splits code
     on logical boundaries and delegates prose to the standard word splitter.
+
+    Subclasses ``adalflow.core.component.Component`` so it can sit inside an
+    ``adal.Sequential(splitter, embedder)`` pipeline, which requires every
+    element to be a ``Component`` instance (a plain class raises
+    ``TypeError: component should be an instance of Component`` and breaks
+    ``RAG.prepare_retriever`` for every generation source).
 
     Construct it with the same ``text_splitter`` config the pipeline already
     loads from ``embedder.json``; the prose path stays identical to before.
     Code path is controlled by env vars (see module docstring).
+
+    The construction kwargs are stored as public instance attributes mirroring
+    ``TextSplitter``'s own (``split_by``/``chunk_size``/``chunk_overlap``/
+    ``batch_size``/``separators``) so ``Component.to_dict`` / ``from_dict``
+    round-trip the object faithfully when a project's ``.pkl`` cache is
+    reloaded. ``from_dict`` reconstructs via ``cls.__new__`` + ``setattr`` on
+    the serialized ``__dict__`` (including the nested ``_prose_splitter``
+    ``TextSplitter``), so no ``__init__`` re-run is needed on reload.
     """
 
     def __init__(
@@ -205,7 +221,20 @@ class CodeAwareSplitter:
         chunk_overlap: int = 150,
         **kwargs,
     ):
-        # Prose documents keep the exact previous behaviour.
+        # MUST precede any attribute assignment: Component.__init__ sets up
+        # _components/_parameters/etc. that __setattr__ depends on, and also
+        # registers this class in EntityMapping.
+        super().__init__()
+        # Save construction kwargs as public attrs (mirrors TextSplitter) for
+        # faithful to_dict/from_dict round-tripping of the .pkl cache.
+        self.split_by = split_by
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+        self.batch_size = kwargs.get("batch_size", 1000)
+        self.separators = kwargs.get("separators")
+        # Prose documents keep the exact previous behaviour. Stored as a
+        # sub-component (Component.__setattr__ files it under _components),
+        # exactly like the TextSplitter inside the original Sequential.
         self._prose_splitter = TextSplitter(
             split_by=split_by, chunk_size=chunk_size, chunk_overlap=chunk_overlap, **{k: v for k, v in kwargs.items() if k in ("batch_size", "separators")}
         )
@@ -251,3 +280,15 @@ class CodeAwareSplitter:
             f"CodeAwareSplitter: {len(documents)} docs -> {len(split_docs)} chunks"
         )
         return split_docs
+
+
+# Register the class in adalflow's EntityMapping at import time. Component's
+# __init__ already auto-registers an instance's class, but the .pkl reload path
+# (LocalDB.load_state -> from_dict) can run in a process that has never
+# instantiated a CodeAwareSplitter (e.g. a project already cached, returned
+# early before the fresh pipeline is built). Registering at module load time
+# -- which happens once data_pipeline imports code_splitter -- guarantees
+# from_dict can resolve "CodeAwareSplitter" instead of logging
+# "Unknown class type" on every reload of a code-split project. Mirrors the
+# OllamaDocumentProcessor registration in api/ollama_patch.py.
+EntityMapping.register("CodeAwareSplitter", CodeAwareSplitter)

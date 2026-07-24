@@ -18,6 +18,13 @@ from api.data_root import get_data_root as get_adalflow_default_root_path
 from adalflow.core.db import LocalDB
 from api.config import configs, DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES
 from api.ollama_patch import OllamaDocumentProcessor
+# Module-level import so api.code_splitter is loaded (and its
+# EntityMapping.register("CodeAwareSplitter", ...) runs) at app startup, BEFORE
+# any LocalDB.load_state() reload path can run in prepare_db_index. The local
+# import inside prepare_data_pipeline alone is too late for the cached-.pkl
+# early-return path, which would otherwise log "Unknown class type:
+# CodeAwareSplitter" on every reload of a code-split project.
+from api import code_splitter  # noqa: F401
 from urllib.parse import urlparse, urlunparse, quote
 import requests
 from requests.exceptions import RequestException

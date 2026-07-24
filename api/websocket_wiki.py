@@ -251,7 +251,7 @@ async def handle_websocket_chat(websocket: WebSocket):
         # killswitch, and never runs for Deep Research -- that flow already
         # has its own multi-iteration structure and prompts. Shared with
         # simple_chat.py so the two transports can't drift on this.
-        tool_calling_enabled, tools = search_tool.resolve_tool_calling(
+        tool_calling_enabled, tools, external_tools = await search_tool.resolve_tool_calling(
             enable_tool_calling=request.enable_tool_calling,
             is_deep_research=is_deep_research,
             is_zim=is_zim,
@@ -505,7 +505,7 @@ async def handle_websocket_chat(websocket: WebSocket):
         if tool_calling_enabled:
             prompt += TOOL_CALLING_INSTRUCTIONS.format(
                 subject=tool_subject,
-                tools_block=search_tool.build_tools_block(tools, tool_subject),
+                tools_block=search_tool.build_tools_block(tools, tool_subject, external_tools),
                 max_rounds=MAX_TOOL_ROUNDS,
             ) + "\n\n"
 
@@ -593,8 +593,9 @@ async def handle_websocket_chat(websocket: WebSocket):
                     api_endpoint=request.api_endpoint,
                     tools=tools,
                     tool_labels=search_tool.TOOL_LABELS,
-                    tool_schemas_anthropic=search_tool.build_tool_schemas_anthropic(tools, tool_subject),
-                    tool_schemas_openai=search_tool.build_tool_schemas_openai(tools, tool_subject),
+                    tool_schemas_anthropic=search_tool.build_tool_schemas_anthropic(tools, tool_subject, external_tools),
+                    tool_schemas_openai=search_tool.build_tool_schemas_openai(tools, tool_subject, external_tools),
+                    external_name_to_prefix={e["native_name"]: e["prefix"] for e in external_tools},
                 )
             elif tool_calling_enabled:
                 response_stream = run_agent_chat(

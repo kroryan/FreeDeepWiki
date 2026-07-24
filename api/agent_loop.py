@@ -25,7 +25,7 @@ from api.anthropic_client import AnthropicClient
 from api.openai_client import OpenAIClient
 from api.litellm_client import LiteLLMClient
 from api.provider_streaming import stream_provider_response
-from api.search_tool import native_tool_name_to_prefix
+from api.search_tool import ToolHandler, native_tool_name_to_prefix
 from api.stream_events import SendProcess, ThinkingSink, encode_process
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ async def _run_agent_rounds(
     model_config_kwargs: dict,
     api_key: Optional[str],
     api_endpoint: Optional[str],
-    tools: dict[str, Callable[[str], str]],
+    tools: dict[str, ToolHandler],
     tool_labels: dict[str, str],
     send_chunk: SendChunk,
     send_process: Optional[SendProcess] = None,
@@ -196,7 +196,7 @@ async def _run_agent_rounds(
         else:
             await tracked_send_chunk(f"\n\n_({label}: {query})_\n\n")
         try:
-            tool_result = handler(query)
+            tool_result = await handler(query)
         except Exception as e:
             logger.warning(f"tool handler for {prefix} failed for query {query!r}: {e}")
             tool_result = "Tool call failed."
@@ -220,7 +220,7 @@ async def run_agent_chat(
     model_config_kwargs: dict,
     api_key: Optional[str] = None,
     api_endpoint: Optional[str] = None,
-    tools: dict[str, Callable[[str], str]],
+    tools: dict[str, ToolHandler],
     tool_labels: Optional[dict[str, str]] = None,
 ) -> AsyncIterator[str]:
     """Async-generator facade over `_run_agent_rounds`'s callback-based loop,
@@ -327,12 +327,13 @@ async def _run_native_tool_rounds(
     model_config_kwargs: dict,
     api_key: Optional[str],
     api_endpoint: Optional[str],
-    tools: dict[str, Callable[[str], str]],
+    tools: dict[str, ToolHandler],
     tool_labels: dict[str, str],
     tool_schemas_anthropic: list[dict],
     tool_schemas_openai: list[dict],
     send_chunk: SendChunk,
     send_process: Optional[SendProcess] = None,
+    external_name_to_prefix: Optional[dict[str, str]] = None,
 ) -> None:
     """Structured/native tool-calling loop: unlike _run_agent_rounds (which
     sniffs a textual convention out of a token stream), the model's actual
@@ -342,6 +343,12 @@ async def _run_native_tool_rounds(
     `send_chunk` as they arrive -- so an answer appears progressively even
     while native tool-calling is active, exactly like every other provider,
     instead of buffering the whole round before showing anything.
+
+    ``external_name_to_prefix`` maps the sanitized native schema names of
+    external MCP tools (built by search_tool._collect_external_tools) back to
+    the textual prefix that keys `tools`, so a tool_use/tool_call on an
+    external tool dispatches to its handler. Built-ins are handled by
+    native_tool_name_to_prefix; this map only carries the external ones.
     """
     client = _build_native_client(provider, api_key, api_endpoint)
     is_claude = provider == "claude"
@@ -441,10 +448,17 @@ async def _run_native_tool_rounds(
             })
 
         for tc in tool_calls:
+            # Built-ins resolve via native_tool_name_to_prefix; external MCP
+            # tools resolve via the per-chat external_name_to_prefix map.
             prefix = native_tool_name_to_prefix(tc["name"])
+            if prefix is None and external_name_to_prefix:
+                prefix = external_name_to_prefix.get(tc["name"])
             handler = tools.get(prefix) if prefix else None
             args = tc.get("input") if is_claude else tc.get("arguments")
             args = args or {}
+            # Display string: first arg value (built-ins are single-string; for
+            # a multi-arg external tool this is just a short label for the
+            # Process panel -- the full args dict is what's actually passed).
             query = next(iter(args.values()), "") if args else ""
 
             if handler is None:
@@ -459,7 +473,10 @@ async def _run_native_tool_rounds(
                 else:
                     await send_chunk(f"\n\n_({label}: {query})_\n\n")
                 try:
-                    tool_result = handler(query)
+                    # Pass the FULL args dict: built-in handlers coerce it back
+                    # to their single string (see search_tool._coerce_str_arg),
+                    # external MCP handlers use it as their multi-arg input.
+                    tool_result = await handler(args)
                 except Exception as e:
                     logger.warning(f"tool handler for {tc['name']} failed for {query!r}: {e}")
                     tool_result = "Tool call failed."
@@ -494,10 +511,11 @@ async def run_native_tool_chat(
     model_config_kwargs: dict,
     api_key: Optional[str] = None,
     api_endpoint: Optional[str] = None,
-    tools: dict[str, Callable[[str], str]],
+    tools: dict[str, ToolHandler],
     tool_labels: Optional[dict[str, str]] = None,
     tool_schemas_anthropic: list[dict],
     tool_schemas_openai: list[dict],
+    external_name_to_prefix: Optional[dict[str, str]] = None,
 ) -> AsyncIterator[str]:
     """Async-generator facade over `_run_native_tool_rounds`, mirroring
     `run_agent_chat`'s queue-bridging shape so both call sites can consume
@@ -533,6 +551,7 @@ async def run_native_tool_chat(
                 tool_schemas_openai=tool_schemas_openai,
                 send_chunk=send_chunk,
                 send_process=send_process,
+                external_name_to_prefix=external_name_to_prefix,
             )
         finally:
             await queue.put(_DONE)

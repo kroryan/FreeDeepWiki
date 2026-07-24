@@ -24,11 +24,19 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 from typing import Any, Optional
 
 from api.storage import connect, profile_db_path
 
 logger = logging.getLogger(__name__)
+
+# Per-request timeout for a single stdio JSON-RPC round-trip (initialize,
+# tools/list, tools/call). A server that hangs on readline would otherwise
+# block the chat's setup forever; this turns it into a clean failure that
+# list_server_tools / call_server_tool already swallow into "no tools / error
+# string" so the chat proceeds with just the built-in tools.
+STDIO_TIMEOUT = int(os.environ.get("HACKDEEPWIKI_MCP_STDIO_TIMEOUT", "30"))
 
 
 def _ensure_servers(conn) -> None:
@@ -102,15 +110,63 @@ class StdioMcpClient:
         self._env = {**os.environ, **(env or {})}
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._next_id = 1
+        self._stderr_drainer: Optional[asyncio.Task] = None
+
+    def _resolve_command(self) -> str:
+        """Resolve the server command to an executable path. A bare name
+        (e.g. ``npx``, ``python``) is looked up on PATH via ``shutil.which`` --
+        important inside the AppImage where the bundled runtime's bin dir may
+        not be on PATH for the launched server, and a missing command would
+        otherwise surface as an opaque OSError. An absolute path is used as-is
+        (it may legitimately point outside PATH)."""
+        if not self._command:
+            raise RuntimeError("MCP server config has no command set")
+        if os.path.isabs(self._command):
+            if not os.path.exists(self._command):
+                raise RuntimeError(f"MCP command {self._command!r} does not exist")
+            return self._command
+        resolved = shutil.which(self._command)
+        if not resolved:
+            raise RuntimeError(
+                f"MCP command {self._command!r} not found in PATH "
+                f"(PATH has {len(os.environ.get('PATH', '').split(os.pathsep))} entries). "
+                "Install it or set an absolute path in the server config."
+            )
+        return resolved
+
+    async def _drain_stderr(self) -> None:
+        """Continuously read and discard the server's stderr so a verbose
+        server (many MCP servers log every request on stderr) can't fill the
+        OS pipe buffer and block. Logged at DEBUG so it's invisible unless a
+        dev is diagnosing a server."""
+        proc = self._proc
+        if not proc or not proc.stderr:
+            return
+        try:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    break
+                logger.debug(
+                    "MCP stderr [%s]: %s",
+                    self._command,
+                    line.decode(errors="replace").rstrip(),
+                )
+        except Exception as e:  # noqa: BLE001 - drainer must never disrupt the chat
+            logger.debug("MCP stderr drainer stopped: %s", e)
 
     async def connect(self) -> None:
+        cmd = self._resolve_command()
         self._proc = await asyncio.create_subprocess_exec(
-            self._command, *self._args,
+            cmd, *self._args,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=self._env,
         )
+        # Drain stderr in the background so a chatty server can't deadlock on
+        # a full stderr pipe. Cancelled in close().
+        self._stderr_drainer = asyncio.create_task(self._drain_stderr())
         # initialize handshake
         await self._call("initialize", {
             "protocolVersion": "2024-11-05",
@@ -132,6 +188,8 @@ class StdioMcpClient:
         return "\n".join(t for t in texts if t)
 
     async def close(self) -> None:
+        if self._stderr_drainer and not self._stderr_drainer.done():
+            self._stderr_drainer.cancel()
         if self._proc and self._proc.returncode is None:
             try:
                 self._proc.terminate()
@@ -152,7 +210,14 @@ class StdioMcpClient:
         await self._proc.stdin.drain()
         # read lines until we get the response with our id (skip notifications)
         while True:
-            line = await self._proc.stdout.readline()
+            try:
+                line = await asyncio.wait_for(
+                    self._proc.stdout.readline(), timeout=STDIO_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    f"MCP server timed out ({STDIO_TIMEOUT}s) responding to {method}"
+                )
             if not line:
                 raise RuntimeError(f"MCP server closed stdin before responding to {method}")
             try:
@@ -182,7 +247,7 @@ async def _http_call(url: str, method: str, params: dict,
     req_body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
     hdrs = {"Content-Type": "application/json", **(headers or {})}
     # run blocking urllib in a thread so the async loop isn't stalled
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _do():
         r = urllib.request.Request(url, data=req_body, headers=hdrs, method="POST")
@@ -216,3 +281,71 @@ async def list_server_tools(server: dict) -> list[dict]:
     except Exception as e:  # noqa: BLE001
         logger.warning(f"MCP server {server.get('name')} tools/list failed: {e}")
         return []
+
+
+# How long chat setup will wait for ONE server's tools/list before giving up
+# on it and proceeding with just the other tools. Kept modest so a
+# misconfigured/unreachable server can't stall the start of every chat.
+LIST_TOOLS_TIMEOUT = int(os.environ.get("HACKDEEPWIKI_MCP_LIST_TIMEOUT", "10"))
+
+
+async def list_server_tools_timed(server: dict) -> list[dict]:
+    """list_server_tools with an overall timeout. A server that takes longer
+    than LIST_TOOLS_TIMEOUT to enumerate its tools is skipped (returns []),
+    so one slow external server can't delay the chat for everyone."""
+    try:
+        return await asyncio.wait_for(
+            list_server_tools(server), timeout=LIST_TOOLS_TIMEOUT
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "MCP server %s tools/list timed out after %ss; skipping",
+            server.get("name"), LIST_TOOLS_TIMEOUT,
+        )
+        return []
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"MCP server {server.get('name')} tools/list failed: {e}")
+        return []
+
+
+def _flatten_tool_content(resp: Any) -> str:
+    """MCP tools/call returns content as a list of {type, text} blocks; flatten
+    text blocks to a single string. Falls back to a json dump for non-text
+    content so the model still sees something usable."""
+    content = resp.get("content", []) if isinstance(resp, dict) else []
+    texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+    joined = "\n".join(t for t in texts if t)
+    if joined:
+        return joined
+    if content:
+        return json.dumps(content, ensure_ascii=False)
+    return "(empty result)"
+
+
+async def call_server_tool(server: dict, tool_name: str, arguments: dict) -> str:
+    """Call one tool on a configured external server and return its text
+    result. NEVER raises -- on any failure it returns a short error string so
+    the agent loop can feed the error back to the model instead of crashing
+    the chat. A fresh connection is opened per call (matches list_server_tools'
+    connect/list/close lifecycle); MCP servers are expected to handle this."""
+    cfg = server.get("config", {})
+    transport = server.get("transport", "stdio")
+    try:
+        if transport == "http":
+            res = await _http_call(
+                cfg["url"], "tools/call",
+                {"name": tool_name, "arguments": arguments or {}},
+                cfg.get("headers"),
+            )
+            return _flatten_tool_content(res)
+        # stdio
+        client = StdioMcpClient(cfg["command"], cfg.get("args", []), cfg.get("env"))
+        try:
+            await client.connect()
+            result = await client.call_tool(tool_name, arguments or {})
+            return result if result else "(empty result)"
+        finally:
+            await client.close()
+    except Exception as e:  # noqa: BLE001 - never break the chat on an external tool
+        logger.warning(f"MCP call_tool {server.get('name')}/{tool_name} failed: {e}")
+        return f"MCP tool {tool_name!r} on server {server.get('name')!r} failed: {e}"
