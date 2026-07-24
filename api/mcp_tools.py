@@ -46,31 +46,66 @@ def _tool(name: str, description: str, schema: dict[str, Any]):
     return deco
 
 
-def _resolve_cache_dir(owner: str, repo: str, repo_type: str, language: str) -> Optional[str]:
-    """Locate the on-disk wiki-cache directory for a repo/language, without
-    importing the full app (keeps this importable in isolation). Returns
-    None if no release exists."""
-    # Mirror api.api._cache_dir / read_wiki_cache's on-disk layout without
-    # the heavy WikiCacheData import: the cache lives under
-    # <data_root>/wikicache/<type>/<owner>/<repo>/<lang>/.
+def _resolve_cache_dir() -> str:
+    """The flat wikicache directory -- caches are saved as
+    ``hackdeepwiki_cache_<type>_<owner>_<repo>_<lang>_<...>.json`` in ONE
+    directory (not nested per owner/repo), matching api.api.WIKI_CACHE_DIR.
+    Mirrored here (not imported) so this module stays importable in isolation
+    for the MCP stdio server; the prefix is a 2-line filename convention, not
+    logic that drifts."""
     try:
         from api.data_root import get_data_root
-        base = os.path.join(get_data_root(), "wikicache", repo_type or "github", owner, repo, language)
-        return base if os.path.isdir(base) else None
+        return os.path.join(get_data_root(), "wikicache")
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"could not resolve cache dir for {owner}/{repo}: {e}")
-        return None
+        logger.warning(f"could not resolve wikicache dir: {e}")
+        return ""
+
+
+_CACHE_PREFIX = "hackdeepwiki_cache_"
+_LEGACY_CACHE_PREFIX = "freedeepwiki_cache_"  # pre-rename
 
 
 def _list_cache_files(owner: str, repo: str, repo_type: str, language: str) -> list[str]:
-    """All .json cache files for a repo/language, newest-first."""
+    """All cache files for one repo/language/type, newest-first. Matches
+    api.api._repo_cache_prefixes (current + legacy prefix) so caches saved
+    before the rename are still found."""
     import glob
-    base = _resolve_cache_dir(owner, repo, repo_type, language)
-    if not base:
+    base = _resolve_cache_dir()
+    if not base or not os.path.isdir(base):
         return []
-    files = glob.glob(os.path.join(base, "*.json"))
+    prefixes = (
+        f"{_CACHE_PREFIX}{repo_type}_{owner}_{repo}_{language}",
+        f"{_LEGACY_CACHE_PREFIX}{repo_type}_{owner}_{repo}_{language}",
+    )
+    files = [
+        os.path.join(base, fn)
+        for fn in os.listdir(base)
+        if fn.endswith(".json") and fn.startswith(prefixes)
+    ]
     files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return files
+
+
+def _extract_pages(cache: dict) -> list[dict]:
+    """Pull the page list out of a WikiCacheData-shaped dict. The cache stores
+    pages two ways: ``wiki_structure.pages`` (list of {id,title,content,...})
+    and ``generated_pages`` (dict id->page). We union both so a search/read
+    hits every page regardless of which the generator populated. Each entry is
+    normalized to a plain dict with id/title/content."""
+    out: dict[str, dict] = {}
+    ws = cache.get("wiki_structure") or {}
+    if isinstance(ws, dict):
+        for p in ws.get("pages", []) or []:
+            if isinstance(p, dict):
+                pid = str(p.get("id") or p.get("title") or "")
+                if pid:
+                    out[pid] = p
+    gp = cache.get("generated_pages") or {}
+    if isinstance(gp, dict):
+        for pid, p in gp.items():
+            if isinstance(p, dict):
+                out[str(pid)] = p
+    return list(out.values())
 
 
 def _load_latest_cache(owner: str, repo: str, repo_type: str, language: str) -> Optional[dict]:
@@ -105,23 +140,18 @@ def search_wiki(owner: str, repo: str, query: str, language: str = "en",
     cache = _load_latest_cache(owner, repo, repo_type, language)
     if not cache:
         return f"No generated wiki found for {owner}/{repo} ({language}). Generate one first."
-    pages = cache.get("pages", [])
-    if isinstance(cache.get("file_tree"), dict) and "pages" not in cache:
-        # some layouts nest pages under file_tree
-        pages = cache.get("file_tree", {}).get("pages", pages)
+    pages = _extract_pages(cache)
     q = (query or "").lower()
     terms = [t for t in q.split() if t]
     scored = []
     for page in pages:
-        if not isinstance(page, dict):
-            continue
-        title = str(page.get("title") or page.get("name") or "")
-        content = str(page.get("content") or page.get("markdown") or "")
+        title = str(page.get("title") or page.get("id") or "")
+        content = str(page.get("content") or "")
         text = (title + "\n" + content).lower()
         score = sum(1 for t in terms if t in text)
         if score > 0:
             snippet = content[:200].replace("\n", " ").strip()
-            scored.append((score, title, snippet, page.get("path") or page.get("id") or title))
+            scored.append((score, title, snippet, page.get("id") or title))
     scored.sort(key=lambda x: x[0], reverse=True)
     if not scored:
         return f"No wiki pages matched '{query}' in {owner}/{repo}."
@@ -151,15 +181,13 @@ def read_doc(owner: str, repo: str, path: str, language: str = "en",
     cache = _load_latest_cache(owner, repo, repo_type, language)
     if not cache:
         return f"No generated wiki found for {owner}/{repo} ({language})."
-    pages = cache.get("pages", [])
+    pages = _extract_pages(cache)
     target = (path or "").strip().lower()
     for page in pages:
-        if not isinstance(page, dict):
-            continue
-        cand = str(page.get("path") or page.get("id") or page.get("title") or "")
+        cand = str(page.get("id") or page.get("title") or "")
         title = str(page.get("title") or "")
         if target and (target == cand.lower() or target == title.lower() or target in cand.lower()):
-            content = page.get("content") or page.get("markdown") or ""
+            content = page.get("content") or ""
             return f"# {title}\n\n{content}"
     return f"Page '{path}' not found in {owner}/{repo} wiki. Use list_wiki_structure to see available pages."
 
@@ -183,17 +211,16 @@ def list_wiki_structure(owner: str, repo: str, language: str = "en",
     cache = _load_latest_cache(owner, repo, repo_type, language)
     if not cache:
         return f"No generated wiki found for {owner}/{repo} ({language})."
-    pages = cache.get("pages", [])
-    tree = cache.get("file_tree")
+    pages = _extract_pages(cache)
+    ws = cache.get("wiki_structure") or {}
+    sections = ws.get("sections") if isinstance(ws, dict) else None
     lines = [f"Wiki structure for {owner}/{repo} ({language}):"]
     for page in pages:
-        if not isinstance(page, dict):
-            continue
-        title = str(page.get("title") or page.get("name") or "(untitled)")
-        path = str(page.get("path") or page.get("id") or title)
-        lines.append(f"  - {title}  [{path}]")
-    if tree:
-        lines.append(f"\n(file_tree root keys: {list(tree.keys()) if isinstance(tree, dict) else type(tree).__name__})")
+        title = str(page.get("title") or page.get("id") or "(untitled)")
+        pid = str(page.get("id") or title)
+        lines.append(f"  - {title}  [{pid}]")
+    if sections:
+        lines.append(f"\n({len(sections)} section(s) in wiki_structure)")
     return "\n".join(lines) if len(lines) > 1 else f"Wiki for {owner}/{repo} has no pages."
 
 

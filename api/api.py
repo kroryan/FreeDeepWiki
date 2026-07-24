@@ -254,6 +254,10 @@ from api.provider_streaming import stream_provider_response
 from api.prompts import PAGE_EDIT_AI_SYSTEM_PROMPT
 from api.security import sanitize_error_message
 from api.mcp_server import handle_request as mcp_handle_request, get_runtime_token as mcp_runtime_token
+from api.storage.wiki_search import index_wiki_cache, search as wiki_fts_search, drop_repo as wiki_fts_drop_repo
+from api.storage.wiki_shares import (
+    create_share, resolve_share, list_shares, delete_share,
+)
 
 @app.get("/lang/config")
 async def get_lang_config():
@@ -1538,6 +1542,26 @@ async def save_wiki_cache(data: WikiCacheRequest) -> Optional[int]:
         with open(cache_path, 'w', encoding='utf-8') as f:
             json.dump(payload.model_dump(), f, indent=2)
         logger.info(f"Wiki cache successfully saved to {cache_path} (release v{next_version})")
+
+        # Fase 2: keep the FTS5 wiki-search index in sync with the cache so a
+        # /api/wiki/search right after a save finds the new content. Best-effort
+        # -- a failure here must never roll back a successful cache write, so
+        # the wiki itself is never lost to an indexing error.
+        try:
+            pages_for_index = []
+            ws = payload.wiki_structure
+            if ws and ws.pages:
+                pages_for_index.extend(p.model_dump() for p in ws.pages)
+            if payload.generated_pages:
+                pages_for_index.extend(p.model_dump() for p in payload.generated_pages.values())
+            if pages_for_index:
+                index_wiki_cache(
+                    data.repo.owner, data.repo.repo, data.repo.type,
+                    data.language, pages_for_index, version=f"v{next_version}",
+                )
+        except Exception as idx_e:
+            logger.warning(f"FTS wiki index update failed (cache saved anyway): {idx_e}")
+
         return next_version
     except IOError as e:
         logger.error(f"IOError saving wiki cache to {cache_path}: {e.strerror} (errno: {e.errno})", exc_info=True)
@@ -2771,6 +2795,151 @@ async def mcp_token():
     if os.environ.get("HACKDEEPWIKI_MCP_TOKEN"):
         return {"configured": True, "token": token, "hint": "Set via HACKDEEPWIKI_MCP_TOKEN env."}
     return {"configured": False, "token": token, "hint": "Per-process token; rotate on restart. Set HACKDEEPWIKI_MCP_TOKEN to pin it."}
+
+# ---- Fase 2: wiki full-text search + shareable links ----------------------
+
+@app.get("/api/wiki/search")
+async def wiki_search_endpoint(
+    q: str = Query(..., description="Search query"),
+    owner: Optional[str] = Query(None, description="Filter to one owner"),
+    repo: Optional[str] = Query(None, description="Filter to one repo"),
+    language: Optional[str] = Query(None, description="Filter to one language"),
+    limit: int = Query(20, ge=1, le=100, description="Max results"),
+):
+    """Full-text search across all generated wikis (FTS5). Returns ranked
+    hits with a snippet each, enough to deep-link to the page. Spans repos
+    by default; scope with owner/repo/language. Only finds wikis that have
+    been indexed (indexing happens on save, see save_wiki_cache)."""
+    try:
+        hits = wiki_fts_search(q, owner=owner, repo=repo, language=language, limit=limit)
+        return {"query": q, "count": len(hits), "results": hits}
+    except Exception as e:
+        logger.error(f"wiki search failed for {q!r}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+
+
+@app.post("/api/share")
+async def create_share_endpoint(
+    owner: Optional[str] = Query(None),
+    repo: str = Query(...),
+    repo_type: str = Query("github"),
+    language: str = Query(...),
+    version: Optional[str] = Query(None),
+    title: Optional[str] = Query(None),
+):
+    """Mint a shareable link ID for one wiki release. The link resolves to
+    the repo/language/version pointer; the wiki content is read on demand
+    from the wikicache, so sharing doesn't duplicate content. Idempotent:
+    re-sharing the same release returns the existing ID."""
+    try:
+        share_id = create_share(owner, repo, repo_type, language, version=version, title=title)
+        return {"share_id": share_id, "url": f"/share/{share_id}"}
+    except Exception as e:
+        logger.error(f"create share failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+
+
+@app.get("/api/share/{share_id}")
+async def get_share_endpoint(share_id: str):
+    """Resolve a share ID to its wiki pointer (repo/language/version). The
+    frontend /share/[id] page calls this, then loads the wiki via
+    /api/wiki_cache. Returns 404 for unknown/expired shares or shares whose
+    referenced wiki has been deleted (resolved by checking the cache exists)."""
+    try:
+        resolved = resolve_share(share_id)
+    except Exception as e:
+        logger.error(f"resolve share {share_id} failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+    if not resolved:
+        raise HTTPException(status_code=404, detail="Share not found or expired")
+    # Confirm the referenced wiki still exists on disk; a deleted wiki
+    # invalidates its share cleanly instead of resolving to nothing.
+    files = _list_repo_cache_files(
+        resolved["repo_type"], resolved.get("owner", ""), resolved["repo"], resolved["language"]
+    )
+    if not files:
+        raise HTTPException(status_code=404, detail="The wiki this share pointed to has been deleted")
+    return resolved
+
+
+@app.get("/api/shares")
+async def list_shares_endpoint(
+    owner: Optional[str] = Query(None),
+    repo: Optional[str] = Query(None),
+):
+    """List the user's shareable links (optionally filtered by repo), for a
+    'my shares' management view."""
+    try:
+        return {"shares": list_shares(owner=owner, repo=repo)}
+    except Exception as e:
+        logger.error(f"list shares failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+
+
+@app.delete("/api/share/{share_id}")
+async def delete_share_endpoint(share_id: str):
+    """Revoke a shareable link. The wiki itself is untouched."""
+    try:
+        deleted = delete_share(share_id)
+    except Exception as e:
+        logger.error(f"delete share {share_id} failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Share not found")
+    return {"deleted": share_id}
+
+
+@app.get("/api/mindmap/{owner}/{repo}")
+async def mindmap_endpoint(
+    owner: str,
+    repo: str,
+    repo_type: str = Query("github"),
+    language: str = Query("en"),
+):
+    """Return the wiki's section/page tree as a nested structure suitable for
+    rendering a dedicated mind-map (OpenDeepWiki has a dedicated /mindmap
+    worker+route; HackDeepWiki already renders Mermaid inline, so this route
+    just exposes the tree the mind-map view consumes, no worker needed).
+
+    Reads from the latest wiki cache release. Returns 404 if no wiki exists."""
+    try:
+        cached = await read_wiki_cache(owner, repo, repo_type, language)
+    except Exception as e:
+        logger.error(f"mindmap load failed for {owner}/{repo}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+    if not cached:
+        raise HTTPException(status_code=404, detail="No wiki generated for this repo/language")
+    ws = cached.wiki_structure
+    # Build {title, children} tree from rootSections -> sections -> pages.
+    sections_by_id = {s.id: s for s in (ws.sections or [])}
+    pages_by_id = {p.id: p for p in (ws.pages or [])}
+
+    def node_for_page(pid: str) -> dict:
+        p = pages_by_id.get(pid)
+        if not p:
+            return {"id": pid, "title": pid}
+        return {"id": p.id, "title": p.title, "related": p.relatedPages or []}
+
+    def node_for_section(sid: str) -> dict:
+        s = sections_by_id.get(sid)
+        if not s:
+            return {"id": sid, "title": sid, "children": []}
+        children = []
+        for sub in (s.subsections or []):
+            children.append(node_for_section(sub))
+        for pid in (s.pages or []):
+            children.append(node_for_page(pid))
+        return {"id": s.id, "title": s.title, "children": children}
+
+    if ws.rootSections:
+        tree = [node_for_section(sid) for sid in ws.rootSections]
+    else:
+        tree = [node_for_page(p.id) for p in (ws.pages or [])]
+    return {
+        "title": ws.title or f"{owner}/{repo}",
+        "description": ws.description or "",
+        "tree": tree,
+    }
 
 @app.get("/")
 async def root():
