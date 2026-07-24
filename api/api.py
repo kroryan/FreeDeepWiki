@@ -3137,6 +3137,197 @@ async def delete_profile_endpoint(name: str):
     return {"deleted": name}
 
 
+# ---------------------------------------------------------------------------
+# Fase 6 -- Agent skills. Discovery + opt-in injection. A skill is a
+# SKILL.md (frontmatter + workflow body) under the bundled skills dir or a
+# user skills dir; the chat request's `skills` field selects which to inject
+# into the system prompt (see apply_skills_to_system_prompt in chat_common,
+# wired in simple_chat.py + websocket_wiki.py). This route lists them for a
+# "pick a skill" UI. No write side -- skills are files, not DB rows, so a
+# user adds one by dropping <name>/SKILL.md in the user skills dir.
+# ---------------------------------------------------------------------------
+@app.get("/api/skills")
+async def list_skills_endpoint():
+    from api.skills import list_skills
+    try:
+        skills = list_skills()
+    except Exception as e:
+        logger.error(f"list skills failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+    # Surface name + description + allowed-tools only; the full workflow body
+    # and the on-disk path are prompt/internal details the UI doesn't need
+    # (and path leaks filesystem layout).
+    return {"skills": [
+        {"name": s["name"], "description": s.get("description", ""),
+         "allowed_tools": s.get("allowed_tools", "")}
+        for s in skills
+    ]}
+
+
+# ---------------------------------------------------------------------------
+# Fase 7 -- external MCP servers. The inverse of Fase 1: let HackDeepWiki's
+# chat call tools from OTHER MCP servers the user configures (a GitHub MCP,
+# a filesystem MCP, ...). Config lives in profile.db (mcp_servers table) so a
+# user adds/removes servers at runtime without rebuilding. Registration of a
+# server's tools into a chat's tool set is the chat path's job; these routes
+# are the CRUD front.
+# ---------------------------------------------------------------------------
+@app.get("/api/mcp_servers")
+async def list_mcp_servers_endpoint():
+    from api import mcp_client
+    try:
+        return {"servers": mcp_client.list_servers()}
+    except Exception as e:
+        logger.error(f"list mcp servers failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+
+
+@app.post("/api/mcp_servers")
+async def add_mcp_server_endpoint(request: Request):
+    """Register an external MCP server. Body: {name, transport ('stdio'|'http'),
+    config}. For stdio, config = {command, args?, env?}; for http, config =
+    {url, headers?}. Config is stored as JSON in profile.db."""
+    from api import mcp_client
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=sanitize_error_message(f"invalid JSON body: {e}"))
+    name = body.get("name")
+    transport = (body.get("transport") or "stdio").lower()
+    config = body.get("config") or {}
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    if transport not in ("stdio", "http"):
+        raise HTTPException(status_code=400, detail="transport must be 'stdio' or 'http'")
+    if transport == "stdio" and not config.get("command"):
+        raise HTTPException(status_code=400, detail="stdio config requires 'command'")
+    if transport == "http" and not config.get("url"):
+        raise HTTPException(status_code=400, detail="http config requires 'url'")
+    try:
+        mcp_client.add_server(name, transport, config)
+    except Exception as e:
+        logger.error(f"add mcp server failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+    return {"saved": name, "transport": transport}
+
+
+@app.delete("/api/mcp_servers/{name}")
+async def remove_mcp_server_endpoint(name: str):
+    from api import mcp_client
+    try:
+        deleted = mcp_client.remove_server(name)
+    except Exception as e:
+        logger.error(f"remove mcp server failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+    if not deleted:
+        raise HTTPException(status_code=404, detail="MCP server not found")
+    return {"deleted": name}
+
+
+# ---------------------------------------------------------------------------
+# Fase 6 -- server-side chat history + sessions. The frontend's chat
+# sessions currently live only in localStorage; these routes give them a
+# durable home in <repo_key>.db so a conversation survives a browser clear
+# or a machine switch. owner/repo/type identify which per-repo DB (mirrors
+# the fields the chat request already carries); session_id is the
+# frontend's existing session id.
+# ---------------------------------------------------------------------------
+@app.get("/api/chat_history/sessions")
+async def list_chat_sessions_endpoint(
+    owner: Optional[str] = Query(None),
+    repo: Optional[str] = Query(None),
+    type: Optional[str] = Query("github"),
+):
+    from api.storage import chat_history
+    try:
+        return {"sessions": chat_history.list_sessions(owner, repo, type)}
+    except Exception as e:
+        logger.error(f"list chat sessions failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+
+
+@app.post("/api/chat_history/sessions")
+async def persist_chat_session_endpoint(request: Request):
+    """Bulk-save (or replace) a whole session: {owner, repo, type, session_id,
+    title, messages:[{role,content}]}. Atomically replaces the session's
+    history so a re-sync from localStorage can't leave a gapped/duplicated
+    transcript."""
+    from api.storage import chat_history
+    try:
+        body = await request.json()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=sanitize_error_message(f"invalid JSON body: {e}"))
+    sid = body.get("session_id")
+    if not sid:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    messages = body.get("messages") or []
+    try:
+        chat_history.persist_session_json(
+            body.get("owner"), body.get("repo"), body.get("type") or "github",
+            sid, body.get("title") or "", messages,
+        )
+    except Exception as e:
+        logger.error(f"persist chat session failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+    return {"saved": sid, "count": len(messages)}
+
+
+@app.get("/api/chat_history")
+async def get_chat_history_endpoint(
+    session_id: str = Query(...),
+    owner: Optional[str] = Query(None),
+    repo: Optional[str] = Query(None),
+    type: Optional[str] = Query("github"),
+    limit: int = Query(200, ge=1, le=2000),
+):
+    from api.storage import chat_history
+    try:
+        return {"messages": chat_history.get_history(owner, repo, type, session_id, limit)}
+    except Exception as e:
+        logger.error(f"get chat history failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+
+
+@app.delete("/api/chat_history/sessions/{session_id}")
+async def delete_chat_session_endpoint(
+    session_id: str,
+    owner: Optional[str] = Query(None),
+    repo: Optional[str] = Query(None),
+    type: Optional[str] = Query("github"),
+):
+    from api.storage import chat_history
+    try:
+        chat_history.delete_session(owner, repo, type, session_id)
+    except Exception as e:
+        logger.error(f"delete chat session failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+    return {"deleted": session_id}
+
+
+# ---------------------------------------------------------------------------
+# Fase 7.2 -- migrate the legacy adalflow .pkl embedding index into the
+# durable ``embeddings`` SQLite table (a parallel inspectable copy; the hot
+# path still reads the .pkl). Read-only on the .pkl, wipes+reinserts the
+# table for this repo so it's safe to re-run after a re-embed. Best-effort:
+# a missing .pkl returns found=false, never raises.
+# ---------------------------------------------------------------------------
+@app.post("/api/embeddings/backfill")
+async def backfill_embeddings_endpoint(
+    owner: Optional[str] = Query(None),
+    repo: Optional[str] = Query(None),
+    type: Optional[str] = Query("github"),
+):
+    from api.storage import embeddings_backfill
+    from api.storage import embeddings as embeddings_store
+    try:
+        report = embeddings_backfill.backfill_from_pkl(owner, repo, type)
+        report["rows_in_db"] = embeddings_store.count(owner, repo, type)
+    except Exception as e:
+        logger.error(f"embeddings backfill failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=sanitize_error_message(str(e)))
+    return report
+
+
 @app.get("/")
 async def root():
     """Root endpoint to check if the API is running and list available endpoints dynamically."""

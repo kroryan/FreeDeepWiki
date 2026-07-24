@@ -79,3 +79,28 @@ def truncate_query_for_fallback(query: str, max_chars: int = MAX_FALLBACK_QUERY_
         f"Query itself was oversized ({len(query)} chars); truncated for fallback"
     )
     return truncated
+
+
+def apply_skills_to_system_prompt(system_prompt: str, selected_skills) -> str:
+    """Fase 6 -- append the opt-in skills block to a system prompt.
+
+    ``selected_skills`` is the request's ``skills`` field (a list of skill
+    names or None). When empty/None, or when no discovered skill matches, this
+    is a no-op and returns ``system_prompt`` unchanged -- so chats that don't
+    opt in pay zero context cost. The actual discovery + rendering lives in
+    ``api.skills.render_skills_block``; this wrapper exists in chat_common so
+    BOTH chat transports (simple_chat HTTP + websocket_wiki WS) call the same
+    helper and can't drift on where/whether skills are injected. Importing
+    ``api.skills`` lazily here keeps chat_common dependency-light (skills is
+    only imported on the path that actually uses it)."""
+    if not selected_skills:
+        return system_prompt
+    try:
+        from api.skills import render_skills_block
+    except Exception:  # noqa: BLE001 -- skills is optional; never break chat
+        logger.warning("skills module unavailable; skipping skills injection")
+        return system_prompt
+    block = render_skills_block(list(selected_skills))
+    if not block:
+        return system_prompt
+    return f"{system_prompt}\n\n{block}"

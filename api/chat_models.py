@@ -53,6 +53,18 @@ class ChatCompletionRequest(BaseModel):
     owner: Optional[str] = Field(None, description="Repository owner (or 'website' for a crawled site), for security context lookup")
     repo: Optional[str] = Field(None, description="Repository name (or site hostname for a crawled site), for security context lookup")
 
+    # Fase 6 -- Agent skills. Opt-in: a list of skill names (e.g. ["think",
+    # "security-review"]) the chat wants applied. Empty/None = no skill
+    # workflow injected (default), so chats that don't need structured
+    # reasoning don't pay the context cost. Skill discovery + rendering lives
+    # in api.skills; render_skills_block(selected) emits a <skills> block the
+    # model self-selects from. See apply_skills_to_system_prompt in
+    # chat_common (shared by both transports so they can't drift).
+    skills: Optional[List[str]] = Field(
+        None,
+        description="Optional list of skill names to inject into the system prompt (opt-in structured-reasoning workflows).",
+    )
+
     # model parameters
     provider: str = Field(
         "google",

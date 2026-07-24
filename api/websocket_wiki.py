@@ -48,6 +48,7 @@ from api.chat_common import (
     MAX_FALLBACK_QUERY_CHARS,
     is_context_limit_error,
     truncate_query_for_fallback,
+    apply_skills_to_system_prompt,
 )
 
 # Back-compat alias for the original private name this module used internally
@@ -418,6 +419,11 @@ async def handle_websocket_chat(websocket: WebSocket):
             system_prompt = template.format(
                 subject=subject_kind, repo_url=repo_url, repo_name=repo_name, language_name=language_name
             )
+
+        # Fase 6 -- opt-in skills injection (no-op when request.skills is
+        # empty/None or no matching skill exists). Shared helper with
+        # simple_chat.py so both transports stay in sync.
+        system_prompt = apply_skills_to_system_prompt(system_prompt, request.skills)
 
         # Fetch file content if provided
         file_content = ""

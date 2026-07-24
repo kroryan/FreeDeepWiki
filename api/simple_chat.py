@@ -40,6 +40,7 @@ from api.chat_common import (
     MAX_FALLBACK_QUERY_CHARS,
     is_context_limit_error,
     truncate_query_for_fallback,
+    apply_skills_to_system_prompt,
 )
 
 # Back-compat alias for the original private name this module used internally.
@@ -395,6 +396,11 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                 repo_name=repo_name,
                 language_name=language_name
             )
+
+        # Fase 6 -- opt-in skills injection (no-op when request.skills is
+        # empty/None or no matching skill exists). Shared helper so the WS
+        # transport can't drift on this.
+        system_prompt = apply_skills_to_system_prompt(system_prompt, request.skills)
 
         # Fetch file content if provided
         file_content = ""
