@@ -46,44 +46,18 @@ def _tool(name: str, description: str, schema: dict[str, Any]):
     return deco
 
 
-def _resolve_cache_dir() -> str:
-    """The flat wikicache directory -- caches are saved as
-    ``hackdeepwiki_cache_<type>_<owner>_<repo>_<lang>_<...>.json`` in ONE
-    directory (not nested per owner/repo), matching api.api.WIKI_CACHE_DIR.
-    Mirrored here (not imported) so this module stays importable in isolation
-    for the MCP stdio server; the prefix is a 2-line filename convention, not
-    logic that drifts."""
-    try:
-        from api.data_root import get_data_root
-        return os.path.join(get_data_root(), "wikicache")
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"could not resolve wikicache dir: {e}")
-        return ""
-
-
-_CACHE_PREFIX = "hackdeepwiki_cache_"
-_LEGACY_CACHE_PREFIX = "freedeepwiki_cache_"  # pre-rename
+# Cache path resolution lives in api.wiki_cache_paths (single source of truth,
+# shared with api.api + wiki_search). This module used to re-declare the
+# prefix strings and the dir, which is how it once looked in the wrong
+# (nested) layout and found no wikis -- now it imports the real resolver.
+from api.wiki_cache_paths import list_cache_files, load_latest_cache_json
 
 
 def _list_cache_files(owner: str, repo: str, repo_type: str, language: str) -> list[str]:
-    """All cache files for one repo/language/type, newest-first. Matches
-    api.api._repo_cache_prefixes (current + legacy prefix) so caches saved
-    before the rename are still found."""
-    import glob
-    base = _resolve_cache_dir()
-    if not base or not os.path.isdir(base):
-        return []
-    prefixes = (
-        f"{_CACHE_PREFIX}{repo_type}_{owner}_{repo}_{language}",
-        f"{_LEGACY_CACHE_PREFIX}{repo_type}_{owner}_{repo}_{language}",
-    )
-    files = [
-        os.path.join(base, fn)
-        for fn in os.listdir(base)
-        if fn.endswith(".json") and fn.startswith(prefixes)
-    ]
-    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return files
+    """All cache files for one repo/language/type, newest-first. Thin wrapper
+    over the shared resolver (kept under this name since the tools below call
+    it and Fase 2's wiki_search test surface used it too)."""
+    return list_cache_files(repo_type, owner, repo, language)
 
 
 def _extract_pages(cache: dict) -> list[dict]:
@@ -109,14 +83,10 @@ def _extract_pages(cache: dict) -> list[dict]:
 
 
 def _load_latest_cache(owner: str, repo: str, repo_type: str, language: str) -> Optional[dict]:
-    import json
-    for path in _list_cache_files(owner, repo, repo_type, language):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"could not read cache {path}: {e}")
-    return None
+    # Delegate to the shared resolver (api.wiki_cache_paths.load_latest_cache_json)
+    # so the cache-read path isn't duplicated here -- it already does newest-first
+    # selection across current + legacy prefixes.
+    return load_latest_cache_json(owner, repo, repo_type, language)
 
 
 @_tool(

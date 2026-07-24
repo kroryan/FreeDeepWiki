@@ -1060,8 +1060,19 @@ async def _ws_chat(websocket: WebSocket):
 
 # --- Wiki Cache Helper Functions ---
 
-WIKI_CACHE_DIR = os.path.join(get_adalflow_default_root_path(), "wikicache")
-os.makedirs(WIKI_CACHE_DIR, exist_ok=True)
+# Wiki-cache path layout lives in api.wiki_cache_paths (single source of truth,
+# shared with mcp_tools + wiki_search so they locate caches the same way
+# instead of re-declaring the prefix strings and drifting). Re-exported here
+# under the names this module historically used, so the ~15 existing helpers
+# below keep working unchanged.
+from api.wiki_cache_paths import (
+    WIKI_CACHE_DIR,
+    WIKI_CACHE_FILE_PREFIX,
+    LEGACY_WIKI_CACHE_FILE_PREFIX as _LEGACY_WIKI_CACHE_FILE_PREFIX,
+    repo_cache_prefix as _repo_cache_prefix,
+    repo_cache_prefixes as _repo_cache_prefixes,
+    list_cache_files as _list_cache_files_raw,
+)
 
 # --- Vulnerability scan cache helpers ---
 # Vulnerability reports live in the same portable wikicache dir as the wiki
@@ -1297,25 +1308,11 @@ def _split_newline_filters(value) -> List[str]:
         return [str(v).strip() for v in value if str(v).strip()]
     return [line.strip() for line in str(value).splitlines() if line.strip()]
 
-WIKI_CACHE_FILE_PREFIX = "hackdeepwiki_cache_"
-_LEGACY_WIKI_CACHE_FILE_PREFIX = "freedeepwiki_cache_"  # pre-rename filename prefix
 
-
-def _repo_cache_prefix(repo_type: str, owner: str, repo: str, language: str) -> str:
-    """Filename prefix used for *new* cache writes for one repo/language/type."""
-    return f"{WIKI_CACHE_FILE_PREFIX}{repo_type}_{owner}_{repo}_{language}"
-
-
-def _repo_cache_prefixes(repo_type: str, owner: str, repo: str, language: str) -> List[str]:
-    """Every filename prefix that could hold a release of one
-    repo/language/type -- current prefix first, then the pre-rename
-    (FreeDeepWiki) prefix, so caches saved before the rename are still
-    found/managed (read, deleted, version-counted) rather than silently
-    orphaned."""
-    return [
-        _repo_cache_prefix(repo_type, owner, repo, language),
-        f"{_LEGACY_WIKI_CACHE_FILE_PREFIX}{repo_type}_{owner}_{repo}_{language}",
-    ]
+# WIKI_CACHE_FILE_PREFIX / _LEGACY_WIKI_CACHE_FILE_PREFIX / _repo_cache_prefix /
+# _repo_cache_prefixes are imported from api.wiki_cache_paths above (single
+# source of truth). The old local definitions lived here and were duplicated
+# in mcp_tools, which is how the two drifted on the cache layout.
 
 
 def _repo_has_any_cache(repo_type: str, owner: str, repo: str) -> bool:
@@ -1398,16 +1395,13 @@ def get_wiki_cache_path(
 def _list_repo_cache_files(repo_type: str, owner: str, repo: str, language: str) -> List[str]:
     """Return absolute paths of every cache file for one repo/language/type
     (both the current and pre-rename filename prefix -- see
-    ``_repo_cache_prefixes``)."""
-    prefixes = tuple(_repo_cache_prefixes(repo_type, owner, repo, language))
+    ``_repo_cache_prefixes``). Thin wrapper over the shared
+    api.wiki_cache_paths.list_cache_files so this module and mcp_tools/
+    wiki_search agree on what's a cache file."""
     try:
-        return [
-            os.path.join(WIKI_CACHE_DIR, fn)
-            for fn in os.listdir(WIKI_CACHE_DIR)
-            if fn.startswith(prefixes) and fn.endswith(".json")
-        ]
+        return _list_cache_files_raw(repo_type, owner, repo, language)
     except Exception as e:
-        logger.error(f"Error listing cache files for {prefixes}: {e}")
+        logger.error(f"Error listing cache files: {e}")
         return []
 
 

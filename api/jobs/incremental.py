@@ -22,23 +22,23 @@ import os
 from typing import Optional
 
 from api.data_root import get_data_root
+from api.data_pipeline import CODE_EXTENSIONS, DOC_EXTENSIONS
 from api.storage.file_hashes import sha256_of_file, changed_files, upsert_hash, reset
 
 logger = logging.getLogger(__name__)
 
-# Walk only the file types the indexer would embed -- mirroring
-# data_pipeline.read_all_documents's extensions so the diff matches what a
-# refresh would actually touch.
-_CODE_EXTS = (".py", ".js", ".ts", ".java", ".cpp", ".c", ".h", ".hpp", ".go", ".rs",
-              ".rb", ".php", ".swift", ".kt", ".scala", ".cs", ".lua", ".sh", ".bash",
-              ".jsx", ".tsx", ".mjs", ".vue", ".svelte")
-_DOC_EXTS = (".md", ".txt", ".rst", ".json", ".yaml", ".yml")
-_TRACKED_EXTS = set(_CODE_EXTS + _DOC_EXTS)
+# The set of files the diff walks == the set the indexer embeds, sourced from
+# data_pipeline.CODE_EXTENSIONS/DOC_EXTENSIONS (single source of truth). Do
+# NOT redeclare extension lists here -- that's how the diff and the index
+# silently disagreed on what counts as a tracked file.
+_TRACKED_EXTS = set(CODE_EXTENSIONS + DOC_EXTENSIONS)
 
-# Cheap exclude set for the walk (full exclusion rules live in
-# data_pipeline.should_process_file; here we only skip the heavy obvious
-# dirs so the diff doesn't descend into node_modules/.git).
-_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "env",
+# Dirs never to descend into during the diff walk. These are the obvious heavy
+# ones; the full exclusion rules (DEFAULT_EXCLUDED_DIRS/FILES) live in config
+# and are applied by data_pipeline at index time. We only need a cheap skip
+# set here so the walk doesn't waste time in .git/node_modules/etc. before the
+# per-file extension filter runs.
+_SKIP_DIRS = {"node_modules", "__pycache__", ".git", ".venv", "venv", "env",
               "dist", "build", ".next", "target", ".adalflow", "DATABASE"}
 
 

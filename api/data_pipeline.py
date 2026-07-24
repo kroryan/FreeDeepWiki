@@ -30,6 +30,18 @@ logger = logging.getLogger(__name__)
 # Maximum token limit for OpenAI embedding models
 MAX_EMBEDDING_TOKENS = 8192
 
+# File extensions the indexer embeds. Module-level (not local to
+# read_all_documents) so api.jobs.incremental.compute_diff walks the SAME set
+# the splitter/embedder would touch -- otherwise the incremental diff tracks a
+# different file set than the index, and a changed .rb/.kt would be missed by
+# the diff (or a changed .html flagged by the diff but never re-embedded).
+# Single source of truth for "what counts as a tracked source file".
+CODE_EXTENSIONS: List[str] = [
+    ".py", ".js", ".ts", ".java", ".cpp", ".c", ".h", ".hpp", ".go", ".rs",
+    ".jsx", ".tsx", ".html", ".css", ".php", ".swift", ".cs",
+]
+DOC_EXTENSIONS: List[str] = [".md", ".txt", ".rst", ".json", ".yaml", ".yml"]
+
 # Example/template config files that must NEVER be excluded, even though
 # the exclude list's `.env.*` / `*.env` globs would catch them. These are
 # documentation (the literal "copy this to .env and fill in your keys"
@@ -412,10 +424,12 @@ def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder:
     if embedder_type is None and is_ollama_embedder is not None:
         embedder_type = 'ollama' if is_ollama_embedder else None
     documents = []
-    # File extensions to look for, prioritizing code files
-    code_extensions = [".py", ".js", ".ts", ".java", ".cpp", ".c", ".h", ".hpp", ".go", ".rs",
-                       ".jsx", ".tsx", ".html", ".css", ".php", ".swift", ".cs"]
-    doc_extensions = [".md", ".txt", ".rst", ".json", ".yaml", ".yml"]
+    # File extensions to look for, prioritizing code files. Reuse the
+    # module-level CODE_EXTENSIONS / DOC_EXTENSIONS (single source of truth,
+    # also used by api.jobs.incremental.compute_diff so the diff matches
+    # exactly what the indexer would re-embed).
+    code_extensions = CODE_EXTENSIONS
+    doc_extensions = DOC_EXTENSIONS
 
     # Determine filtering mode: inclusion or exclusion
     use_inclusion_mode = (included_dirs is not None and len(included_dirs) > 0) or (included_files is not None and len(included_files) > 0)
