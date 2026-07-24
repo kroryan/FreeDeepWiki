@@ -87,3 +87,6 @@ DATABASE/
 
 # scratch/local-only tooling (e.g. kiwix-desktop clone used for .zim research)
 /tmp/
+
+# stale config backups
+*.bak
