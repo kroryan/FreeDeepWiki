@@ -75,3 +75,12 @@ class ChatCompletionRequest(BaseModel):
             "has no way to know the underlying files changed since it was built."
         ),
     )
+    filter_file_paths: Optional[List[str]] = Field(
+        None,
+        description=(
+            "When set (wiki page generation), post-filter RAG chunks to only those "
+            "whose file_path metadata is in this set -- the page's relevant_files. "
+            "Keeps unfiltered results as a fallback if too few match, so a page never "
+            "gets zero context from an over-narrow filter."
+        ),
+    )

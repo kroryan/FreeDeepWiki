@@ -53,8 +53,12 @@ _MERMAID_ASSET_PATH = "assets/mermaid.min.js"
 # convention instead reads diagram source from <pre class="mermaid">, so this
 # swaps the wrapper (keeping the HTML-escaped content as-is: the browser
 # decodes entities for us via .textContent, same as any other HTML text).
+# Matches the common ```` ```mermaid ```` plus the alternates models emit
+# (```mermaidjs, ```mmd) so those don't slip through as plain <pre><code>
+# and show as raw source in the offline archive.
 _MERMAID_FENCE_RE = re.compile(
-    r'<pre><code class="language-mermaid">(.*?)</code></pre>', re.DOTALL
+    r'<pre><code class="language-(?:mermaid|mermaidjs|mmd)">(.*?)</code></pre>',
+    re.DOTALL,
 )
 
 # Remote images referenced from Markdown -- ![alt](https://...) -- go dead
@@ -97,19 +101,35 @@ a { color: #2563eb; }
 .hdw-meta { color: #666; font-size: 0.9em; margin-bottom: 1.5em; }
 """
 
-_MERMAID_INIT_SCRIPT = """
-<script src="../%s"></script>
+def _mermaid_init_script(rel_prefix: str) -> str:
+    """Mermaid loader, with a relative path to the vendored mermaid.min.js
+    that accounts for how deep the page lives inside the archive. Pages are
+    written at ``pages/<page_id>.html``; a page_id containing slashes (e.g.
+    a fanwiki import mirroring a URL path) lands the page deeper, so the
+    ``../`` prefix that works for a one-level page would resolve to the wrong
+    place (``pages/assets/`` instead of the archive root)."""
+    return f"""
+<script src="{rel_prefix}{_MERMAID_ASSET_PATH}"></script>
 <script>
-  if (window.mermaid) {
-    mermaid.initialize({ startOnLoad: false, theme: "neutral", securityLevel: "loose" });
-    mermaid.run({ querySelector: "pre.mermaid" });
-  }
+  if (window.mermaid) {{
+    mermaid.initialize({{ startOnLoad: false, theme: "neutral", securityLevel: "loose" }});
+    mermaid.run({{ querySelector: "pre.mermaid" }});
+  }}
 </script>
-""" % _MERMAID_ASSET_PATH
+"""
 
 
-def _page_shell(title: str, body_html: str, *, include_mermaid: bool = False) -> str:
-    scripts = _MERMAID_INIT_SCRIPT if include_mermaid else ""
+def _rel_prefix_for_page(page_id: str) -> str:
+    """Relative path prefix from a page at ``pages/<page_id>.html`` back to the
+    archive root. A page_id with N ``/`` characters means the page is N+1
+    levels deep, so it needs N+1 ``../`` to reach root (where ``assets/``
+    lives). Default (no slash) is one level -> ``../``."""
+    depth = page_id.count("/") + 1
+    return "../" * depth
+
+
+def _page_shell(title: str, body_html: str, *, include_mermaid: bool = False, rel_prefix: str = "../") -> str:
+    scripts = _mermaid_init_script(rel_prefix) if include_mermaid else ""
     return (
         "<!doctype html><html><head><meta charset=\"utf-8\">"
         f"<title>{html_lib.escape(title)}</title><style>{_PAGE_CSS}</style></head>"
@@ -117,19 +137,23 @@ def _page_shell(title: str, body_html: str, *, include_mermaid: bool = False) ->
     )
 
 
-def _download_remote_images(markdown_text: str, url_cache: Dict[str, str], assets: List["ZimAssetSpec"]) -> str:
+def _download_remote_images(markdown_text: str, url_cache: Dict[str, str], assets: List["ZimAssetSpec"], rel_prefix: str = "../") -> str:
     """Replace every remote (http/https) Markdown image URL with a locally
     embedded copy, downloading each URL at most once across the whole
     archive (url_cache) and appending new ZimAssetSpec entries to `assets`.
     A failed download (network error, timeout, 404, ...) is non-fatal --
     the original remote URL is left in place so the export never breaks
-    over one bad image, it just won't work offline for that one image."""
+    over one bad image, it just won't work offline for that one image.
+
+    ``rel_prefix`` is the relative path back to the archive root (see
+    _rel_prefix_for_page) so rewritten image links resolve correctly even
+    for pages whose id contains slashes."""
 
     def replace(match: re.Match) -> str:
         prefix, url, suffix = match.group(1), match.group(2), match.group(3)
         cached = url_cache.get(url)
         if cached:
-            return f"{prefix}../{cached}{suffix}"
+            return f"{prefix}{rel_prefix}{cached}{suffix}"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (HackDeepWiki offline export)"})
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -146,7 +170,7 @@ def _download_remote_images(markdown_text: str, url_cache: Dict[str, str], asset
         archive_path = f"assets/img_{digest}{ext}"
         url_cache[url] = archive_path
         assets.append(ZimAssetSpec(archive_path=archive_path, data=data, mimetype=content_type or guess_mimetype(archive_path)))
-        return f"{prefix}../{archive_path}{suffix}"
+        return f"{prefix}{rel_prefix}{archive_path}{suffix}"
 
     return _MD_REMOTE_IMAGE_RE.sub(replace, markdown_text)
 
@@ -271,15 +295,19 @@ def build_zim(
         index_items = []
         for page in pages:
             path = f"pages/{page.page_id}.html"
+            # Relative path back to archive root -- correct for slash-containing
+            # page_ids (e.g. fanwiki imports mirroring URL paths) so mermaid.js
+            # and embedded images resolve to root assets, not into pages/.
+            rel_prefix = _rel_prefix_for_page(page.page_id)
             if page.html is not None:
                 body_html, has_mermaid = page.html, False
             else:
-                markdown_text = _download_remote_images(page.markdown or "", image_url_cache, asset_list)
+                markdown_text = _download_remote_images(page.markdown or "", image_url_cache, asset_list, rel_prefix=rel_prefix)
                 body_html, has_mermaid = _render_page_body(markdown_text)
             any_mermaid = any_mermaid or has_mermaid
             zim_creator.add_item(_TextItem(
                 path=path, title=page.title,
-                content=_page_shell(page.title, body_html, include_mermaid=has_mermaid),
+                content=_page_shell(page.title, body_html, include_mermaid=has_mermaid, rel_prefix=rel_prefix),
                 mimetype="text/html",
             ))
             index_items.append((path, page.title))
@@ -313,8 +341,23 @@ def build_zim(
                     mimetype=asset.mimetype, front_article=False,
                 ))
 
-        zim_creator.add_metadata("Title", title[:30] or "Wiki")
-        zim_creator.add_metadata("Description", (description or title)[:80])
+        # Truncate metadata to ZIM's recommended lengths, but at a word
+        # boundary so the title doesn't cut mid-word (and for multibyte
+        # languages like CJK, at a code-point boundary -- never mid-byte).
+        def _truncate_at_word(text: str, limit: int) -> str:
+            text = (text or "").strip()
+            if len(text) <= limit:
+                return text
+            cut = text[:limit]
+            # Walk back to the last whitespace boundary; if the title is a
+            # single long word (or CJK with no spaces), just take the limit.
+            boundary = cut.rfind(" ")
+            if boundary > limit // 2:
+                cut = cut[:boundary]
+            return cut.rstrip(".…,;:-") or text[:limit]
+
+        zim_creator.add_metadata("Title", _truncate_at_word(title, 30) or "Wiki")
+        zim_creator.add_metadata("Description", _truncate_at_word(description or title, 80))
         zim_creator.add_metadata("Language", lang_code)
         zim_creator.add_metadata("Creator", creator or "HackDeepWiki")
         zim_creator.add_metadata("Publisher", publisher or "HackDeepWiki")

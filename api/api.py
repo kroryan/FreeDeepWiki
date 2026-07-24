@@ -1,6 +1,7 @@
 import os
 import re
 import io
+import hmac
 import html as html_lib
 import shutil
 import tempfile
@@ -265,9 +266,13 @@ async def get_auth_status():
 @app.post("/auth/validate")
 async def validate_auth_code(request: AuthorizationConfig):
     """
-    Check authorization code.
+    Check authorization code using a constant-time comparison to avoid timing
+    side-channels on the secret. An empty configured code can never match
+    (matches the `not authorization_code` guard used by the write endpoints).
     """
-    return {"success": WIKI_AUTH_CODE == request.code}
+    if not WIKI_AUTH_CODE or not request.code:
+        return {"success": False}
+    return {"success": hmac.compare_digest(WIKI_AUTH_CODE, request.code)}
 
 @app.get("/models/config", response_model=ModelConfig)
 async def get_model_config():
@@ -2092,7 +2097,8 @@ async def delete_imported_fanwiki(
     should not silently destroy the reusable source material.
     """
     if WIKI_AUTH_MODE and (
-        not authorization_code or authorization_code != WIKI_AUTH_CODE
+        not authorization_code or not WIKI_AUTH_CODE
+        or not hmac.compare_digest(WIKI_AUTH_CODE, authorization_code)
     ):
         raise HTTPException(status_code=401, detail="Authorization code is invalid")
     deleted = await asyncio.to_thread(fanwiki_library.delete, start_url)
@@ -2560,7 +2566,9 @@ async def delete_wiki_cache(
 
     if WIKI_AUTH_MODE:
         logger.info("check the authorization code")
-        if not authorization_code or WIKI_AUTH_CODE != authorization_code:
+        if not authorization_code or not WIKI_AUTH_CODE:
+            raise HTTPException(status_code=401, detail="Authorization code is invalid")
+        if not hmac.compare_digest(WIKI_AUTH_CODE, authorization_code):
             raise HTTPException(status_code=401, detail="Authorization code is invalid")
 
     logger.info(f"Attempting to delete wiki cache for {owner}/{repo} ({repo_type}), lang: {language}, version: {version}")

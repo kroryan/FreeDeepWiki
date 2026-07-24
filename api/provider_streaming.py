@@ -235,10 +235,14 @@ async def stream_provider_response(
     if provider == "claude":
         logger.info(f"Using native Anthropic API with model: {requested_model}")
         model = AnthropicClient(api_key=api_key, base_url=api_endpoint)
+        # Honor a per-model max_tokens from the config (so Sonnet/Opus can use
+        # their larger 16k/32k output windows for long wiki pages instead of
+        # being hard-capped at 8192 and truncating mid-page). Fall back to 8192
+        # for older models (haiku/sonnet-3) that cap there.
         model_kwargs = {
             "model": requested_model,
             "temperature": model_config_kwargs.get("temperature", 0.7),
-            "max_tokens": 8192,
+            "max_tokens": int(model_config_kwargs.get("max_tokens", 8192)),
         }
         api_kwargs = model.convert_inputs_to_api_kwargs(
             input=prompt, model_kwargs=model_kwargs, model_type=ModelType.LLM

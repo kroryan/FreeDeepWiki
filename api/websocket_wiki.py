@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Optional, Dict, Any
 from urllib.parse import unquote
 
@@ -87,7 +88,7 @@ async def handle_websocket_chat(websocket: WebSocket):
         if request.messages and len(request.messages) > 0:
             last_message = request.messages[-1]
             if hasattr(last_message, 'content') and last_message.content:
-                tokens = count_tokens(last_message.content, request.provider == "ollama")
+                tokens = count_tokens(last_message.content, embedder_type=request.provider)
                 logger.info(f"Request size: {tokens} tokens")
                 if tokens > 8000:
                     logger.warning(f"Request exceeds recommended token limit ({tokens} > 7500)")
@@ -315,7 +316,7 @@ async def handle_websocket_chat(websocket: WebSocket):
                 # Try to perform RAG retrieval
                 try:
                     # This will use the actual RAG implementation
-                    retrieved_documents = request_rag(rag_query, language=request.language)
+                    retrieved_documents = request_rag(rag_query, language=request.language, filter_file_paths=request.filter_file_paths)
 
                     if retrieved_documents and retrieved_documents[0].documents:
                         # Format context for the prompt in a more structured way
@@ -405,8 +406,11 @@ async def handle_websocket_chat(websocket: WebSocket):
             # Check if this is the first iteration
             is_first_iteration = research_iteration == 1
 
-            # Check if this is the final iteration
-            is_final_iteration = research_iteration >= 5
+            # Check if this is the final iteration. Configurable via env so a
+            # user who wants more (or fewer) research rounds can override the
+            # default of 5 without code changes.
+            _dr_max = int(os.environ.get("HACKDEEPWIKI_DEEP_RESEARCH_MAX_ITERATIONS", "5"))
+            is_final_iteration = research_iteration >= max(1, _dr_max)
 
             if is_first_iteration:
                 system_prompt = DEEP_RESEARCH_FIRST_ITERATION_PROMPT.format(

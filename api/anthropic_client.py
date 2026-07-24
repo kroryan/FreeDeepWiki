@@ -28,6 +28,11 @@ log = logging.getLogger(__name__)
 ANTHROPIC_API_BASE = "https://api.anthropic.com/v1"
 ANTHROPIC_VERSION = "2023-06-01"
 OAUTH_BETA_HEADER = "oauth-2025-04-20"
+# Beta header that unlocks >16384 output tokens on Claude Sonnet/Opus 4.x.
+# Without it, max_tokens above 16384 is rejected by the API; with it, Sonnet
+# 4.5 can emit up to 64k and Opus 4.1 up to 32k, which is what large-repo wiki
+# pages need (the old 8192 cap truncated long pages mid-sentence).
+LONG_OUTPUT_BETA = "output-128k-2025-02-19"
 DEFAULT_MAX_TOKENS = 8192
 
 
@@ -39,7 +44,7 @@ class AnthropicClient(ModelClient):
         self._api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.base_url = (base_url or os.getenv("ANTHROPIC_BASE_URL") or ANTHROPIC_API_BASE).rstrip("/")
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self, max_tokens: int = None) -> Dict[str, str]:
         headers = {"Content-Type": "application/json", "anthropic-version": ANTHROPIC_VERSION}
         if not self._api_key:
             return headers
@@ -49,6 +54,14 @@ class AnthropicClient(ModelClient):
             # Subscription OAuth token (e.g. from `claude login`)
             headers["Authorization"] = f"Bearer {self._api_key}"
             headers["anthropic-beta"] = OAUTH_BETA_HEADER
+        # Requesting more than the standard 16384-token output cap requires
+        # the long-output beta header on the same request. Combine it with the
+        # OAuth beta when present (Anthropic accepts a comma-separated list).
+        if max_tokens and int(max_tokens) > 16384:
+            existing_beta = headers.get("anthropic-beta")
+            headers["anthropic-beta"] = (
+                f"{existing_beta},{LONG_OUTPUT_BETA}" if existing_beta else LONG_OUTPUT_BETA
+            )
         return headers
 
     def convert_inputs_to_api_kwargs(
@@ -89,7 +102,7 @@ class AnthropicClient(ModelClient):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{self.base_url}/messages",
-                headers=self._headers(),
+                headers=self._headers(api_kwargs.get("max_tokens")),
                 json=api_kwargs,
                 timeout=aiohttp.ClientTimeout(total=300),
             ) as response:
@@ -129,7 +142,7 @@ class AnthropicClient(ModelClient):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{self.base_url}/messages",
-                headers=self._headers(),
+                headers=self._headers(api_kwargs.get("max_tokens")),
                 json=api_kwargs,
                 timeout=aiohttp.ClientTimeout(total=300),
             ) as response:
@@ -205,7 +218,7 @@ class AnthropicClient(ModelClient):
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{self.base_url}/messages",
-                headers=self._headers(),
+                headers=self._headers(api_kwargs.get("max_tokens")),
                 json=api_kwargs,
                 timeout=aiohttp.ClientTimeout(total=300),
             ) as response:
@@ -250,7 +263,7 @@ class AnthropicClient(ModelClient):
                 yield error_msg
             return error_generator()
 
-        headers = self._headers()
+        headers = self._headers(api_kwargs.get("max_tokens"))
 
         try:
             async with aiohttp.ClientSession() as session:
@@ -289,7 +302,7 @@ class AnthropicClient(ModelClient):
 
         response = requests.post(
             f"{self.base_url}/messages",
-            headers=self._headers(),
+            headers=self._headers(api_kwargs.get("max_tokens")),
             json=api_kwargs,
             timeout=300,
         )

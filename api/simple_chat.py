@@ -1,4 +1,5 @@
 import logging
+import os
 from urllib.parse import unquote
 
 from fastapi import FastAPI, HTTPException
@@ -18,6 +19,7 @@ from api.prompts import (
     DEEP_RESEARCH_FINAL_ITERATION_PROMPT,
     DEEP_RESEARCH_INTERMEDIATE_ITERATION_PROMPT,
     SIMPLE_CHAT_SYSTEM_PROMPT,
+    SIMPLE_CHAT_SYSTEM_PROMPT_WEBSITE,
     SIMPLE_CHAT_SYSTEM_PROMPT_ZIM,
     TOOL_CALLING_INSTRUCTIONS,
     prepend_no_think,
@@ -85,7 +87,7 @@ async def chat_completions_stream(request: ChatCompletionRequest):
         if request.messages and len(request.messages) > 0:
             last_message = request.messages[-1]
             if hasattr(last_message, 'content') and last_message.content:
-                tokens = count_tokens(last_message.content, request.provider == "ollama")
+                tokens = count_tokens(last_message.content, embedder_type=request.provider)
                 logger.info(f"Request size: {tokens} tokens")
                 if tokens > 8000:
                     logger.warning(f"Request exceeds recommended token limit ({tokens} > 7500)")
@@ -132,7 +134,7 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                     included_files = [unquote(file_pattern) for file_pattern in request.included_files.split('\n') if file_pattern.strip()]
                     logger.info(f"Using custom included files: {included_files}")
 
-                request_rag.prepare_retriever(request.repo_url, request.type, request.token, excluded_dirs, excluded_files, included_dirs, included_files)
+                request_rag.prepare_retriever(request.repo_url, request.type, request.token, excluded_dirs, excluded_files, included_dirs, included_files, force=request.force_refresh)
                 logger.info(f"Retriever prepared for {request.repo_url}")
             except ValueError as e:
                 if "No valid documents with embeddings found" in str(e):
@@ -293,7 +295,7 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                 # Try to perform RAG retrieval
                 try:
                     # This will use the actual RAG implementation
-                    retrieved_documents = request_rag(rag_query, language=request.language)
+                    retrieved_documents = request_rag(rag_query, language=request.language, filter_file_paths=request.filter_file_paths)
 
                     if retrieved_documents and retrieved_documents[0].documents:
                         # Format context for the prompt in a more structured way
@@ -340,12 +342,26 @@ async def chat_completions_stream(request: ChatCompletionRequest):
 
         # Determine repository type
         repo_type = request.type
+        is_fanwiki = repo_type == "fanwiki"
+        # A fanwiki import is page-based content with no source code, same as
+        # a crawled website (see api.fanwiki_import) -- it shares every bit of
+        # "website" treatment except the frontend's crawl trigger. Mirrors
+        # websocket_wiki.py so the two transports can't drift on this.
+        is_website = repo_type == "website" or is_fanwiki
 
-        # Wording used in the system prompt's <role> line below: a .zim is an
-        # offline wiki archive, not a git code repository -- keeping the
-        # "{repo_type} repository" framing for it would confuse the model
-        # into looking for source files that don't exist.
-        subject = "offline wiki archive" if is_zim else f"{repo_type} repository"
+        # Wording used in the system prompt's <role> line (and the
+        # DEEP_RESEARCH_* prompts' {subject} slot): a .zim is an offline wiki
+        # archive and a crawled website has no source code, neither is a git
+        # code repository -- keeping the "code analyst"/"repository" framing
+        # for either confuses the model into looking for source files that
+        # don't exist. Verified as a real cause of failure for websites
+        # specifically (see websocket_wiki.py).
+        subject = (
+            "offline wiki archive" if is_zim
+            else "imported fan wiki" if is_fanwiki
+            else "crawled website" if is_website
+            else f"{repo_type} repository"
+        )
 
         # Get language information
         language_code = request.language or configs["lang_config"]["default"]
@@ -357,8 +373,10 @@ async def chat_completions_stream(request: ChatCompletionRequest):
             # Check if this is the first iteration
             is_first_iteration = research_iteration == 1
 
-            # Check if this is the final iteration
-            is_final_iteration = research_iteration >= 5
+            # Check if this is the final iteration. Configurable via env,
+            # mirroring websocket_wiki.py so both transports agree.
+            _dr_max = int(os.environ.get("HACKDEEPWIKI_DEEP_RESEARCH_MAX_ITERATIONS", "5"))
+            is_final_iteration = research_iteration >= max(1, _dr_max)
 
             if is_first_iteration:
                 system_prompt = DEEP_RESEARCH_FIRST_ITERATION_PROMPT.format(
@@ -384,7 +402,11 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                     language_name=language_name
                 )
         else:
-            template = SIMPLE_CHAT_SYSTEM_PROMPT_ZIM if is_zim else SIMPLE_CHAT_SYSTEM_PROMPT
+            template = (
+                SIMPLE_CHAT_SYSTEM_PROMPT_ZIM if is_zim
+                else SIMPLE_CHAT_SYSTEM_PROMPT_WEBSITE if is_website
+                else SIMPLE_CHAT_SYSTEM_PROMPT
+            )
             system_prompt = template.format(
                 subject=subject,
                 repo_url=repo_url,
@@ -554,8 +576,12 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                 logger.error(f"Error in streaming response: {str(e_outer)}")
                 error_message = str(e_outer)
 
-                # Check for token limit errors
-                if "maximum context length" in error_message or "token limit" in error_message or "too many tokens" in error_message:
+                # Check for token limit errors -- use the shared phrase list so
+                # Ollama's own phrasing ("max context length", "context_length_
+                # exceeded", "prompt too long") is caught too, not just
+                # OpenAI's exact "maximum context length". Mirrors
+                # websocket_wiki.py's _is_context_limit_error.
+                if _is_context_limit_error(error_message):
                     # If we hit a token limit error, try again without context
                     logger.warning("Token limit exceeded, retrying without context")
                     try:
@@ -569,7 +595,24 @@ async def chat_completions_stream(request: ChatCompletionRequest):
                             simplified_prompt += f"<currentFileContent path=\"{request.filePath}\">\n{file_content}\n</currentFileContent>\n\n"
 
                         simplified_prompt += "<note>Answering without retrieval augmentation due to input size constraints.</note>\n\n"
-                        simplified_prompt += f"<query>\n{query}\n</query>\n\nAssistant: "
+
+                        # Dropping context_block only helps when RAG context was
+                        # the oversized part. It can just as easily be `query`
+                        # itself -- cap it defensively (keep head + tail, drop the
+                        # middle where a runaway file/content list tends to live)
+                        # so the fallback doesn't resend the same oversized
+                        # prompt and fail identically. Mirrors websocket_wiki.py.
+                        fallback_query = query
+                        if len(fallback_query) > MAX_FALLBACK_QUERY_CHARS:
+                            head = fallback_query[: MAX_FALLBACK_QUERY_CHARS // 2]
+                            tail = fallback_query[-MAX_FALLBACK_QUERY_CHARS // 2:]
+                            fallback_query = (
+                                f"{head}\n\n[... truncated: original query was "
+                                f"{len(query)} characters, too large to process ...]\n\n{tail}"
+                            )
+                            logger.warning(f"Query itself was oversized ({len(query)} chars); truncated for fallback")
+
+                        simplified_prompt += f"<query>\n{fallback_query}\n</query>\n\nAssistant: "
 
                         # Google's original fallback branch recomputed model_config
                         # from scratch instead of reusing the outer one; every other

@@ -879,8 +879,25 @@ export default function RepoWikiPage() {
         const isRepoPage = effectiveRepoInfo.type !== 'website' && effectiveRepoInfo.type !== 'fanwiki';
         const isIntroPage = !!repoFileTree && wikiStructure?.pages?.[0]?.id === page.id
           && !(isRepoPage && isUserFocusedView);
+
+        // Cross-page linking (B6): the structure step emits <related_pages>
+        // ids per page; surface them as titled links so the model weaves
+        // connections between pages instead of leaving each page in a
+        // silo. Only pages that actually exist in the structure are listed.
+        const allPagesById = new Map((wikiStructure?.pages ?? []).map(p => [p.id, p]));
+        const relatedPagesResolved = (page.relatedPages ?? [])
+          .map(rid => allPagesById.get(rid))
+          .filter((p): p is WikiPage => !!p);
+        const relatedPagesBlock = relatedPagesResolved.length > 0
+          ? `\n\nRELATED PAGES (link to these where the narrative naturally calls for it, using the format \`[Link Text](#${relatedPagesResolved[0].id})\` -- replace the id with the actual page id shown):\n${relatedPagesResolved.map(p => `- id="${p.id}" title="${p.title}"`).join('\n')}\n`
+          : '';
+        // The tree is wrapped in <file_tree> tags so the server-side
+        // context_budget.summarize_file_tree_in_query (run on every /ws/chat
+        // request) can cap it to the model's context budget for huge repos.
+        // It only summarizes when the tree exceeds the budget; small repos
+        // pass through untouched and the model reproduces them verbatim.
         const introStructureBlock = isIntroPage
-          ? `\n\nCRITICAL STRUCTURE REQUIREMENT: This is the introduction/overview page, so it MUST include a "## Project Structure" section presenting the COMPLETE file/page tree below, verbatim, inside a single fenced code block (do not summarize, reorder, or omit any entries) -- this is the one authoritative place in the whole wiki where the full tree is shown:\n\`\`\`\n${repoFileTree}\n\`\`\`\n`
+          ? `\n\nCRITICAL STRUCTURE REQUIREMENT: This is the introduction/overview page, so it MUST include a "## Project Structure" section presenting the COMPLETE file/page tree below, verbatim, inside a single fenced code block (do not summarize, reorder, or omit any entries unless the tree itself was truncated below by the server for context limits -- in that case reproduce what you were given, including the "... and N more" ellipsis lines, exactly) -- this is the one authoritative place in the whole wiki where the full tree is shown:\n<file_tree>\n${repoFileTree}\n</file_tree>\n`
           : '';
 
         // Same signal as determineWikiStructure's userPriorityNote, but
@@ -940,7 +957,40 @@ export default function RepoWikiPage() {
             language === "ru" ? "Русский (Russian)" :
             'English';
 
-        const promptContent = isWebsitePage ? (technicalAnalysisEnabled ? `You are an expert technical writer analyzing a crawled website.
+        // B7: localized scaffolding strings. The <details><summary> label
+        // is the one piece of the page that's pure UI chrome, not content --
+        // so it should follow the configured wiki language, not stay
+        // English regardless. "Relevant source files" / "Relevant pages".
+        const summaryLabel = isWebsitePage
+          ? (language === 'es' ? 'Páginas relevantes'
+            : language === 'ja' ? '関連ページ'
+            : language === 'zh' ? '相关页面'
+            : language === 'zh-tw' ? '相關頁面'
+            : language === 'kr' ? '관련 페이지'
+            : language === 'vi' ? 'Trang liên quan'
+            : language === 'pt-br' ? 'Páginas relevantes'
+            : language === 'fr' ? 'Pages pertinentes'
+            : language === 'ru' ? 'Связанные страницы'
+            : 'Relevant pages')
+          : (language === 'es' ? 'Archivos fuente relevantes'
+            : language === 'ja' ? '関連ソースファイル'
+            : language === 'zh' ? '相关源文件'
+            : language === 'zh-tw' ? '相關原始檔'
+            : language === 'kr' ? '관련 소스 파일'
+            : language === 'vi' ? 'Tệp nguồn liên quan'
+            : language === 'pt-br' ? 'Arquivos fonte relevantes'
+            : language === 'fr' ? 'Fichiers source pertinents'
+            : language === 'ru' ? 'Связанные исходные файлы'
+            : 'Relevant source files');
+        // Placed at the very top of each template so the model adopts the
+        // target language from the first token instead of starting in
+        // English and then switching mid-sentence after the trailing
+        // "IMPORTANT: Generate the content in X language" line (which
+        // stays as a reinforcement).
+        const langInstructionTop = `IMPORTANT: Write the ENTIRE page (including all headings, prose, table content, and the <summary> label) in ${pageLanguageLine}. Do NOT write any English unless ${pageLanguageLine} genuinely uses an English term.`;
+
+        const promptContent = isWebsitePage ? (technicalAnalysisEnabled ? `${langInstructionTop}
+You are an expert technical writer analyzing a crawled website.
 Your task is to generate a comprehensive and accurate wiki page in Markdown format about a specific technical aspect (page template, subsystem, navigation pattern, detected technology) of the website's own implementation.
 
 You will be given:
@@ -950,7 +1000,7 @@ You will be given:
 CRITICAL STARTING INSTRUCTION:
 The very first thing on the page MUST be a \`<details>\` block listing the \`[RELEVANT_PAGES]\` you used. Format it exactly like this:
 <details>
-<summary>Relevant pages</summary>
+<summary>${summaryLabel}</summary>
 
 Remember, do not provide any acknowledgements, disclaimers, apologies, or any other preface before the \`<details>\` block. JUST START with the \`<details>\` block.
 The following pages were used as context for generating this wiki page:
@@ -969,8 +1019,9 @@ Based ONLY on the content of the \`[RELEVANT_PAGES]\` and what can be observed i
 5.  **Citations:** Cite the specific crawled page path(s) each claim is drawn from, e.g. \`Sources: [path/to/page.md]()\`. Cite as many of the provided pages as are actually relevant -- do not pad citations to hit an arbitrary count.
 6.  **Accuracy:** Only state what's actually evidenced in the provided pages. If something can't be determined from crawled HTML/Markdown alone (e.g. backend logic), say so rather than inventing it.
 7.  **Conclusion:** End with a brief summary if appropriate for "${page.title}".
-${introStructureBlock}${pagePriorityNote}
-IMPORTANT: Generate the content in ${pageLanguageLine} language.` : `You are an expert wiki writer creating a content wiki about a website's subject matter (not its technical implementation).
+${introStructureBlock}${relatedPagesBlock}${pagePriorityNote}
+IMPORTANT: Generate the content in ${pageLanguageLine} language.` : `${langInstructionTop}
+You are an expert wiki writer creating a content wiki about a website's subject matter (not its technical implementation).
 Your task is to generate a comprehensive and accurate wiki page in Markdown format about a specific topic within the site's content, the way the site itself organizes that topic.
 
 You will be given:
@@ -980,7 +1031,7 @@ You will be given:
 CRITICAL STARTING INSTRUCTION:
 The very first thing on the page MUST be a \`<details>\` block listing the \`[RELEVANT_PAGES]\` you used. Format it exactly like this:
 <details>
-<summary>Relevant pages</summary>
+<summary>${summaryLabel}</summary>
 
 Remember, do not provide any acknowledgements, disclaimers, apologies, or any other preface before the \`<details>\` block. JUST START with the \`<details>\` block.
 The following pages were used as context for generating this wiki page:
@@ -995,11 +1046,13 @@ Based ONLY on the content of the \`[RELEVANT_PAGES]\`:
 1.  **Introduction:** Start with a concise introduction (1-2 paragraphs) covering "${page.title}" as the site itself presents it.
 2.  **Detailed Sections:** Break down "${page.title}" into logical sections using H2 (\`##\`) and H3 (\`###\`) headings, organized the way the source pages themselves organize this subject matter.
 3.  **Tables:** Use Markdown tables where they help summarize lists of facts, comparisons, or attributes covered by the source pages.
-4.  **Citations:** Cite the specific crawled page path(s) each claim is drawn from, e.g. \`Sources: [path/to/page.md]()\`. Cite as many of the provided pages as are actually relevant -- do not pad citations to hit an arbitrary count.
-5.  **Accuracy:** Do not invent facts beyond what the source pages state. Do NOT analyze the site's own technical implementation (no HTML/CSS/framework talk) -- write about the subject matter itself.
-6.  **Conclusion:** End with a brief summary if appropriate for "${page.title}".
-${introStructureBlock}${pagePriorityNote}
-IMPORTANT: Generate the content in ${pageLanguageLine} language.`) : (isUserFocusedView ? `You are an expert technical writer creating END-USER documentation for a software product.
+4.  **Diagrams (optional):** If the subject matter has a natural hierarchy, taxonomy, or set of relationships that a diagram would clarify, use a Mermaid \`graph TD\` (top-down, never \`graph LR\`) diagram. Quote any label containing punctuation, e.g. A["Genus (Family)"]. Only add a diagram when it genuinely helps -- never force one where a list would do.
+5.  **Citations:** Cite the specific crawled page path(s) each claim is drawn from, e.g. \`Sources: [path/to/page.md]()\`. Cite as many of the provided pages as are actually relevant -- do not pad citations to hit an arbitrary count.
+6.  **Accuracy:** Do not invent facts beyond what the source pages state. Do NOT analyze the site's own technical implementation (no HTML/CSS/framework talk) -- write about the subject matter itself.
+7.  **Conclusion:** End with a brief summary if appropriate for "${page.title}".
+${introStructureBlock}${relatedPagesBlock}${pagePriorityNote}
+IMPORTANT: Generate the content in ${pageLanguageLine} language.`) : (isUserFocusedView ? `${langInstructionTop}
+You are an expert technical writer creating END-USER documentation for a software product.
 Your audience has NO interest in source code -- they just want to install, configure, and use this software effectively. Never discuss architecture, internal implementation, source code organization, or anything a user would never need to know to use the product.
 
 You will be given:
@@ -1009,7 +1062,7 @@ You will be given:
 CRITICAL STARTING INSTRUCTION:
 The very first thing on the page MUST be a \`<details>\` block listing the \`[RELEVANT_SOURCE_FILES]\` you used. Format it exactly like this:
 <details>
-<summary>Relevant source files</summary>
+<summary>${summaryLabel}</summary>
 
 Remember, do not provide any acknowledgements, disclaimers, apologies, or any other preface before the \`<details>\` block. JUST START with the \`<details>\` block.
 The following files were used as context for generating this wiki page:
@@ -1038,31 +1091,31 @@ Based ONLY on the content of the \`[RELEVANT_SOURCE_FILES]\`:
 8.  **Tone:** Clear, friendly, and precise -- written for someone who downloaded/installed this software and wants to get value out of it quickly, not someone evaluating its codebase.
 
 9.  **Conclusion:** End with a brief summary or "next steps" pointer if appropriate for "${page.title}".
-${introStructureBlock}${pagePriorityNote}
+${introStructureBlock}${relatedPagesBlock}${pagePriorityNote}
 IMPORTANT: Generate the content in ${pageLanguageLine} language.
 
 Remember:
 - Ground every instruction in the provided files -- never invent a flag, setting, or behavior.
 - Write for someone using the software, not someone reading or modifying its source code.
 - Structure the document as a practical, actionable guide.
-` : `You are an expert technical writer and software architect.
+` : `${langInstructionTop}
+You are an expert technical writer and software architect.
 Your task is to generate a comprehensive and accurate technical wiki page in Markdown format about a specific feature, system, or module within a given software project.
 
 You will be given:
 1. The "[WIKI_PAGE_TOPIC]" for the page you need to create.
-2. A list of "[RELEVANT_SOURCE_FILES]" from the project that you MUST use as the sole basis for the content. You have access to the full content of these files. You MUST use AT LEAST 5 relevant source files for comprehensive coverage - if fewer are provided, search for additional related files in the codebase.
+2. A list of "[RELEVANT_SOURCE_FILES]" from the project that you MUST use as the sole basis for the content. You have access to the full content of these files. Use ALL of the provided files -- they were chosen for this page. If only one or two were provided, that is the complete set; do NOT invent or cite any file path that was not provided, and do NOT claim to have used a file you were not given.
 
 CRITICAL STARTING INSTRUCTION:
-The very first thing on the page MUST be a \`<details>\` block listing ALL the \`[RELEVANT_SOURCE_FILES]\` you used to generate the content. There MUST be AT LEAST 5 source files listed - if fewer were provided, you MUST find additional related files to include.
+The very first thing on the page MUST be a \`<details>\` block listing exactly the \`[RELEVANT_SOURCE_FILES]\` you were given (no more, no less).
 Format it exactly like this:
 <details>
-<summary>Relevant source files</summary>
+<summary>${summaryLabel}</summary>
 
 Remember, do not provide any acknowledgements, disclaimers, apologies, or any other preface before the \`<details>\` block. JUST START with the \`<details>\` block.
 The following files were used as context for generating this wiki page:
 
 ${filePaths.map(path => `- [${path}](${generateFileUrl(path)})`).join('\n')}
-<!-- Add additional relevant files if fewer than 5 were provided -->
 </details>
 
 Immediately after the \`<details>\` block, the main title of the page should be a H1 Markdown heading: \`# ${page.title}\`.
@@ -1111,6 +1164,28 @@ Based ONLY on the content of the \`[RELEVANT_SOURCE_FILES]\`:
          - Add notes for clarification: "Note over A,B: Description", "Note right of A: Detail"
          - Use autonumber directive to add sequence numbers to messages
          - NEVER use flowchart-style labels like A--|label|-->B. Always use a colon for labels: A->>B: My Label
+    *   Few-shot examples (match this style exactly):
+        \`\`\`mermaid
+        graph TD
+          A["Client (UI)"] --> B["API Gateway"]
+          B --> C["Auth Service"]
+          B --> D["Item Service"]
+          C --> E[("User DB")]
+          D --> F[("Item DB")]
+        \`\`\`
+        \`\`\`mermaid
+        sequenceDiagram
+          participant U as User
+          participant API as API Gateway
+          participant S as Item Service
+          participant DB as Item DB
+          U->>API: GET /items/:id
+          API->>S: getItem(id)
+          S->>DB: SELECT * FROM items
+          DB-->>S: row
+          S-->>API: item DTO
+          API-->>U: 200 OK + JSON
+        \`\`\`
 
 4.  **Tables:**
     *   Use Markdown tables to summarize information such as:
@@ -1124,18 +1199,19 @@ Based ONLY on the content of the \`[RELEVANT_SOURCE_FILES]\`:
     *   Ensure snippets are well-formatted within Markdown code blocks with appropriate language identifiers.
 
 6.  **Source Citations (EXTREMELY IMPORTANT):**
-    *   For EVERY piece of significant information, explanation, diagram, table entry, or code snippet, you MUST cite the specific source file(s) and relevant line numbers from which the information was derived.
+    *   For EVERY piece of significant information, explanation, diagram, table entry, or code snippet, you MUST cite the specific source file(s) from which the information was derived. Only cite files that were actually provided in [RELEVANT_SOURCE_FILES] -- never invent a file path or cite a file you were not given.
     *   Place citations at the end of the paragraph, under the diagram/table, or after the code snippet.
-    *   Use the exact format: \`Sources: [filename.ext:start_line-end_line]()\` for a range, or \`Sources: [filename.ext:line_number]()\` for a single line. Multiple files can be cited: \`Sources: [file1.ext:1-10](), [file2.ext:5](), [dir/file3.ext]()\` (if the whole file is relevant and line numbers are not applicable or too broad).
+    *   Prefer the format \`Sources: [filename.ext]()\` for a whole file. If you can confidently identify the exact line range in the provided file, use \`Sources: [filename.ext:start_line-end_line]()\` -- but only when you are certain of the lines; do NOT fabricate line numbers, and if you are unsure, cite the whole file instead.
+    *   Multiple files can be cited: \`Sources: [file1.ext](), [file2.ext](), [dir/file3.ext]()\`.
     *   If an entire section is overwhelmingly based on one or two files, you can cite them under the section heading in addition to more specific citations within the section.
-    *   IMPORTANT: You MUST cite AT LEAST 5 different source files throughout the wiki page to ensure comprehensive coverage.
+    *   Cite as many of the provided files as are actually relevant -- do not pad citations to hit an arbitrary count, and do not cite a file you did not use.
 
 7.  **Technical Accuracy:** All information must be derived SOLELY from the \`[RELEVANT_SOURCE_FILES]\`. Do not infer, invent, or use external knowledge about similar systems or common practices unless it's directly supported by the provided code. If information is not present in the provided files, do not include it or explicitly state its absence if crucial to the topic.
 
 8.  **Clarity and Conciseness:** Use clear, professional, and concise technical language suitable for other developers working on or learning about the project. Avoid unnecessary jargon, but use correct technical terms where appropriate.
 
 9.  **Conclusion/Summary:** End with a brief summary paragraph if appropriate for "${page.title}", reiterating the key aspects covered and their significance within the project.
-${introStructureBlock}${pagePriorityNote}
+${introStructureBlock}${relatedPagesBlock}${pagePriorityNote}
 IMPORTANT: Generate the content in ${pageLanguageLine} language.
 
 Remember:
@@ -1168,6 +1244,11 @@ Remember:
             page.content,
             `Relevant files: ${filePaths.join(', ')}`,
           ].filter(Boolean).join('\n'),
+          // B10: keep RAG context focused on the page's relevant_files so
+          // the model doesn't get pulled toward semantically similar but
+          // off-topic chunks from unrelated files. Falls back to unfiltered
+          // server-side if too few chunks match.
+          filter_file_paths: filePaths,
           messages: [{
             role: 'user',
             content: promptContent
@@ -1311,6 +1392,24 @@ Remember:
 
         console.log(`Received content for ${page.title}, length: ${content.length} characters`);
 
+        // A16: empty-body guard. A provider hiccup (rate-limit blip, model
+        // emitting only a stop token) can return an empty stream. Saving
+        // that would silently wipe the page's placeholder/error state and
+        // the user would export an empty wiki with no clue why. Mark the
+        // page with an explicit inline error instead, so the user can
+        // retry that one page without losing the rest of the wiki.
+        if (!content.trim()) {
+          console.warn(`Page "${page.title}" came back empty -- treating as a generation failure.`);
+          setGeneratedPages(prev => ({
+            ...prev,
+            [page.id]: { ...page, content: language === 'es'
+              ? 'Error: el modelo no devolvió contenido para esta página. Usa "Reintentar" o regenera la página.'
+              : 'Error: the model returned no content for this page. Use "Retry" or regenerate the page.' }
+          }));
+          resolve();
+          return;
+        }
+
         // Store the FINAL generated content
         const updatedPage = { ...page, content };
         setGeneratedPages(prev => ({ ...prev, [page.id]: updatedPage }));
@@ -1391,7 +1490,7 @@ Remember:
             language === 'zh' ? 'Mandarin Chinese (中文)' :
             language === 'zh-tw' ? 'Traditional Chinese (繁體中文)' :
             language === 'es' ? 'Spanish (Español)' :
-            language === 'kr' ? 'Korean (한国語)' :
+            language === 'kr' ? 'Korean (한국어)' :
             language === 'vi' ? 'Vietnamese (Tiếng Việt)' :
             language === "pt-br" ? "Brazilian Portuguese (Português Brasileiro)" :
             language === "fr" ? "Français (French)" :
@@ -1415,7 +1514,7 @@ ${technicalAnalysisEnabled
   : `I want a CONTENT wiki about this website's subject matter -- e.g. if this is a fan wiki about a game, produce a fan wiki about that game's content, organized the way the site itself organizes its topics. Do NOT analyze the website's own technical implementation (no HTML/CSS/framework talk); write as if documenting the subject the site is about, using the crawled pages as your source material. Mirror the site's own page/section structure where sensible.`}
 
 Determine the most logical structure for this wiki based on the crawled content.`
-        : `Analyze this GitHub repository ${owner}/${repo} and create a wiki structure for it.
+        : `Analyze this ${effectiveRepoInfo.type === 'gitlab' ? 'GitLab' : effectiveRepoInfo.type === 'bitbucket' ? 'Bitbucket' : 'GitHub'} repository ${owner}/${repo} and create a wiki structure for it.
 
 1. The complete file tree of the project:
 <file_tree>
@@ -1505,7 +1604,9 @@ Each section should contain relevant pages. For example, the "Frontend Component
           ? (technicalAnalysisEnabled
               ? `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page technical wiki analyzing the ${repo} website's own architecture, page structure, and technology -- not its subject content.`
               : `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page wiki documenting the subject matter of the ${repo} website (its content, topics, and information), structured to mirror how the site itself is organized. Do not analyze the site's technical implementation.`)
-          : `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page technical wiki for ${owner}/${repo}. Focus on architecture, features, data flow, deployment, and the files named in the repository tree.`,
+          : isUserFocusedView
+            ? `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page end-user guide for ${owner}/${repo}. Focus on installation, configuration, CLI usage, environment variables, and features a user needs to run the software -- not its internal architecture or source code. Retrieve README, docs/, config samples, .env.example, and CLI help text.`
+            : `Plan a ${isComprehensiveView ? 'comprehensive' : 'concise'} ${pageCount}-page technical wiki for ${owner}/${repo}. Focus on architecture, features, data flow, deployment, and the files named in the repository tree.`,
         messages: [{
           role: 'user',
 content: `${subjectIntro}
@@ -3850,10 +3951,34 @@ IMPORTANT:
     if (!currentPageId || !generatedPages[currentPageId] || !editInstruction.trim() || isAiEditing) return;
     setIsAiEditing(true);
     setEditError(null);
-    try {
+
+    // A15: the previous version's `while (true) { reader.read() }` had no
+    // timeout -- if the upstream model stalled mid-stream (no data, no
+    // close frame), the edit spinner spun forever and the only way out
+    // was reloading the page. Use the same idle-timeout pattern as the
+    // page-generation WebSocket path: reset on every chunk, abort the
+    // fetch + bail if 5 minutes pass with no new bytes.
+    const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+    const abortCtrl = new AbortController();
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        console.warn('AI page edit stream went idle -- no data for 5 minutes.');
+        abortCtrl.abort();
+      }, IDLE_TIMEOUT_MS);
+    };
+    resetIdleTimer();
+
+    // A16: some providers occasionally return an empty body (rate limit,
+    // transient blip, or a model that only emits a stop token). The old
+    // code silently set the page content to '' in that case, destroying
+    // the user's existing content on save. Retry once before giving up.
+    const attemptEdit = async (): Promise<string> => {
       const response = await fetch('/api/wiki/page/edit/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        signal: abortCtrl.signal,
         body: JSON.stringify({
           page_title: generatedPages[currentPageId].title,
           current_content: editedContent,
@@ -3875,17 +4000,45 @@ IMPORTANT:
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
+        resetIdleTimer();
         rewritten += decoder.decode(value, { stream: true });
         setEditedContent(rewritten);
       }
       rewritten += decoder.decode();
-      // Same cleanup as the initial page-generation flow, in case the model
-      // wraps its answer in a fence despite being told not to.
-      setEditedContent(rewritten.replace(/^```markdown\s*/i, '').replace(/```\s*$/i, ''));
+      if (idleTimer) clearTimeout(idleTimer);
+      return rewritten.replace(/^```markdown\s*/i, '').replace(/```\s*$/i, '');
+    };
+
+    try {
+      let rewritten = await attemptEdit();
+      if (!rewritten.trim()) {
+        // A16: one retry -- empty body on the first attempt is usually a
+        // transient provider hiccup, not a genuine "nothing to change".
+        console.warn('AI edit returned empty body; retrying once.');
+        rewritten = await attemptEdit();
+      }
+      if (!rewritten.trim()) {
+        setEditError(
+          language === 'es'
+            ? 'El modelo no devolvió contenido para la edición. Intenta reformular la instrucción.'
+            : 'The model returned no content for this edit. Try rephrasing the instruction.'
+        );
+      } else {
+        setEditedContent(rewritten);
+      }
     } catch (err) {
-      console.error('AI page edit failed:', err);
-      setEditError(err instanceof Error ? err.message : 'AI edit failed');
+      if (abortCtrl.signal.aborted) {
+        setEditError(
+          language === 'es'
+            ? (messages.repoPage?.modelTimeoutError || 'La edición se detuvo: sin datos durante 5 minutos.')
+            : 'The edit stalled (no data for 5 minutes).'
+        );
+      } else {
+        console.error('AI page edit failed:', err);
+        setEditError(err instanceof Error ? err.message : 'AI edit failed');
+      }
     } finally {
+      if (idleTimer) clearTimeout(idleTimer);
       setIsAiEditing(false);
     }
   };

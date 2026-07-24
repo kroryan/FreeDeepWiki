@@ -8,7 +8,9 @@ from uuid import uuid4
 import adalflow as adal
 
 from api.tools.embedder import get_embedder
-from api.prompts import RAG_SYSTEM_PROMPT as system_prompt, RAG_TEMPLATE
+# RAG_SYSTEM_PROMPT / RAG_TEMPLATE are no longer imported here: the
+# adal.Generator that used them was dead code (chat generation goes through
+# api.provider_streaming, not this component) and has been removed.
 
 # How many extra candidates to fetch from FAISS beyond the configured
 # retriever.top_k, so _diversify_doc_indices has room to swap same-file
@@ -219,62 +221,16 @@ class RAG(adal.Component):
 
         self.initialize_db_manager()
 
-        # Set up the output parser
-        data_parser = adal.DataClassParser(data_class=RAGAnswer, return_data_class=True)
-
-        # Format instructions to ensure proper output structure
-        format_instructions = data_parser.get_output_format_str() + """
-
-IMPORTANT FORMATTING RULES:
-1. DO NOT include your thinking or reasoning process in the output
-2. Provide only the final, polished answer
-3. DO NOT include ```markdown fences at the beginning or end of your answer
-4. DO NOT wrap your response in any kind of fences
-5. Start your response directly with the content
-6. The content will already be rendered as markdown
-7. Do not use backslashes before special characters like [ ] { } in your answer
-8. When listing tags or similar items, write them as plain text without escape characters
-9. For pipe characters (|) in text, write them directly without escaping them"""
-
-        # Get model configuration based on provider and model
-        from api.config import get_model_config
-        generator_config = get_model_config(self.provider, self.model)
-
-        # Forward any custom API key/endpoint directly to the model client's
-        # constructor (OpenAIClient/LiteLLMClient both accept these) instead of
-        # mutating process-wide env vars, which would race with other concurrent
-        # requests and wouldn't be seen by clients that lazily init an async
-        # client after construction.
-        model_client_class = generator_config["model_client"]
-        client_kwargs = {}
-        if self.api_key:
-            if self.provider in ("openai_custom", "openai"):
-                client_kwargs["api_key"] = self.api_key
-                if self.api_endpoint:
-                    client_kwargs["base_url"] = self.api_endpoint
-            elif self.provider in ("litellm", "claude"):
-                client_kwargs["api_key"] = self.api_key
-
-        # Set up the main generator. adalflow's Generator always initializes its
-        # sqlite response cache (even with use_cache=False), so point it at our
-        # guaranteed-writable data root — the upstream default of ~/.adalflow
-        # breaks with "Permission denied"/"readonly database" when that dir is
-        # root-owned from an earlier sudo/Docker run.
-        from api.data_root import get_data_root
-        self.generator = adal.Generator(
-            template=RAG_TEMPLATE,
-            prompt_kwargs={
-                "output_format_str": format_instructions,
-                "conversation_history": self.memory(),
-                "system_prompt": system_prompt,
-                "contexts": None,
-            },
-            model_client=model_client_class(**client_kwargs),
-            model_kwargs=generator_config["model_kwargs"],
-            output_processors=data_parser,
-            cache_path=get_data_root(),
-            use_cache=False,
-        )
+        # NOTE: an adal.Generator (RAG_SYSTEM_PROMPT + RAG_TEMPLATE + RAGAnswer
+        # output parser) used to be constructed here and stored as
+        # self.generator, but it was NEVER called -- chat generation goes
+        # through api.provider_streaming with prompts assembled in
+        # websocket_wiki.py/simple_chat.py, not through this component. The
+        # dead generator (and the RAG_TEMPLATE/RAGAnswer/format_instructions
+        # machinery below) was removed because keeping it was misleading
+        # (the carefully-crafted RAG_SYSTEM_PROMPT was never sent to any
+        # model) and it eagerly constructed a model client + sqlite cache on
+        # every chat connection for nothing. RAG is purely a retriever now.
 
 
     def initialize_db_manager(self):
@@ -487,8 +443,11 @@ IMPORTANT FORMATTING RULES:
 
         per_file_count: Dict[str, int] = {}
         selected: List[int] = []
+        seen: set = set()
         leftover: List[int] = []
         for idx in doc_indices:
+            if idx in seen:
+                continue  # FAISS can return ties; never include the same chunk twice
             if len(selected) >= self.final_top_k:
                 leftover.append(idx)
                 continue
@@ -498,24 +457,42 @@ IMPORTANT FORMATTING RULES:
             count = per_file_count.get(key, 0)
             if count < MAX_CHUNKS_PER_SOURCE_FILE:
                 selected.append(idx)
+                seen.add(idx)
                 per_file_count[key] = count + 1
             else:
                 leftover.append(idx)
 
         if len(selected) < self.final_top_k:
-            selected.extend(leftover[: self.final_top_k - len(selected)])
+            for idx in leftover:
+                if len(selected) >= self.final_top_k:
+                    break
+                if idx in seen:
+                    continue
+                selected.append(idx)
+                seen.add(idx)
 
         return selected
 
-    def call(self, query: str, language: str = "en") -> Tuple[List]:
+    def call(self, query: str, language: str = "en", filter_file_paths=None):
         """
-        Process a query using RAG.
+        Process a query using RAG (retrieval only; chat generation is done by
+        the caller via api.provider_streaming).
 
-        Args:
-            query: The user's query
+        Returns the RetrievedData object (whose `[0].documents` and
+        `[0].doc_indices` are populated), or None on error. Returning None
+        (instead of a differently-shaped tuple) lets callers uniformly check
+        `if retrieved_documents and retrieved_documents[0].documents:` without
+        an AttributeError when the error path returned an RAGAnswer object
+        that has no `.documents` attribute.
 
-        Returns:
-            Tuple of (RAGAnswer, retrieved_documents)
+        When `filter_file_paths` (a set/list of file paths) is provided, the
+        retrieved chunks are post-filtered to only those whose file_path
+        metadata is in the set -- used by wiki page generation to keep the
+        page's context focused on its designated relevant_files. If fewer
+        than ~3 chunks survive the filter, the unfiltered results are kept
+        as a fallback (some context beats none, and an over-narrow filter
+        could otherwise starve a page whose relevant_files weren't well
+        represented in the chunk index).
         """
         try:
             retrieved_documents = self.retriever(query)
@@ -529,14 +506,29 @@ IMPORTANT FORMATTING RULES:
                 for doc_index in doc_indices
             ]
 
+            if filter_file_paths:
+                filter_set = set(filter_file_paths)
+                filtered_indices = [
+                    idx for idx in doc_indices
+                    if (getattr(self.transformed_docs[idx], "meta_data", None) or {})
+                        .get("file_path", "") in filter_set
+                ]
+                # Keep the filtered set only if it's not starved; otherwise
+                # fall back to the diverse unfiltered results so the page
+                # still has context to work with.
+                if len(filtered_indices) >= 3:
+                    retrieved_documents[0].doc_indices = filtered_indices
+                    retrieved_documents[0].documents = [
+                        self.transformed_docs[doc_index]
+                        for doc_index in filtered_indices
+                    ]
+
             return retrieved_documents
 
         except Exception as e:
             logger.error(f"Error in RAG call: {str(e)}")
-
-            # Create error response
-            error_response = RAGAnswer(
-                rationale="Error occurred while processing the query.",
-                answer=f"I apologize, but I encountered an error while processing your question. Please try again or rephrase your question."
-            )
-            return error_response, []
+            # Return None so callers (websocket_wiki.py/simple_chat.py/
+            # search_tool.py) handle the failure uniformly via their existing
+            # `if not retrieved or not retrieved[0].documents:` guard, instead
+            # of crashing on `retrieved[0].documents` against an RAGAnswer.
+            return None

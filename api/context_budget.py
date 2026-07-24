@@ -38,12 +38,24 @@ _FILE_TREE_RE = re.compile(r"(<file_tree>\n)(.*?)(\n</file_tree>)", re.DOTALL)
 # concrete about its window", NOT applied when num_ctx IS present.
 _DEFAULT_CONTEXT_TOKENS: Dict[str, int] = {
     "ollama": 8192,
+    # Per-provider conservative floors for when num_ctx isn't set. These are
+    # real observed context windows per family, not guesses -- using the
+    # actual window (instead of a flat 100k for every cloud provider) stops
+    # the file-tree budget from over-trimming a 50k-token tree that a
+    # Gemini-1M or Claude-200k model could fully absorb, while still capping
+    # a 200k-token tree that would blow an older 128k model.
+    "claude": 200_000,
+    "google": 1_000_000,
+    "openai": 128_000,
+    "openai_custom": 128_000,
+    "openrouter": 128_000,
+    "litellm": 128_000,
+    "bedrock": 200_000,
+    "azure": 128_000,
+    "dashscope": 128_000,
 }
-# Cloud providers (OpenAI/Anthropic/Google/Bedrock/OpenRouter/...) all have
-# context windows far larger than any repo's file tree could plausibly need,
-# so this is just a conservative floor for "no better information available",
-# not a real observed limit for any of them.
-_FALLBACK_CLOUD_CONTEXT_TOKENS = 100_000
+# Conservative floor for any provider not listed above.
+_FALLBACK_CLOUD_CONTEXT_TOKENS = 128_000
 
 # Fraction of the model's context window reserved for the file tree
 # specifically -- leaves room for the README, task instructions, output XML

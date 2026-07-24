@@ -12,6 +12,8 @@ import base64
 import glob
 import hashlib
 import shutil
+import fnmatch
+from typing import Optional
 from api.data_root import get_data_root as get_adalflow_default_root_path
 from adalflow.core.db import LocalDB
 from api.config import configs, DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES
@@ -482,10 +484,11 @@ def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder:
                         is_included = True
                         break
 
-            # Check if file matches included file patterns
+            # Check if file matches included file patterns (fnmatch so glob
+            # patterns work, not just exact/endswith matches).
             if not is_included and included_files:
                 for included_file in included_files:
-                    if file_name == included_file or file_name.endswith(included_file):
+                    if fnmatch.fnmatch(file_name, included_file):
                         is_included = True
                         break
 
@@ -511,10 +514,18 @@ def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder:
                     is_excluded = True
                     break
 
-            # Check if file matches excluded file patterns
+            # Check if file matches excluded file patterns. Use fnmatch so
+            # glob entries in the exclude list (*.min.js, *.map, *.gz, *.env,
+            # .env.*, ...) actually match -- the old `file_name ==
+            # excluded_file` exact comparison meant every glob pattern
+            # silently never excluded anything (jquery.min.js was indexed
+            # despite "*.min.js" in the list), which both bloated the RAG
+            # index with minified/binary junk and left config files that
+            # SHOULD be excluded (literal names like pyproject.toml) working
+            # by coincidence. fnmatch handles both literal names and globs.
             if not is_excluded:
                 for excluded_file in excluded_files:
-                    if file_name == excluded_file:
+                    if fnmatch.fnmatch(file_name, excluded_file):
                         is_excluded = True
                         break
 
@@ -533,11 +544,27 @@ def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder:
                     content = f.read()
                     relative_path = os.path.relpath(file_path, path)
 
-                    # Determine if this is an implementation file
-                    is_implementation = (
-                        not relative_path.startswith("test_")
-                        and not relative_path.startswith("app_")
-                        and "test" not in relative_path.lower()
+                    # Determine if this is an implementation file (vs a test
+                    # fixture/benchmark). The old heuristic wrongly excluded
+                    # any path starting with "app_" (flagging common main
+                    # entry points like app.py / app_server.py as
+                    # non-implementation) and matched "test" anywhere in the
+                    # path (false positives: protest.py, latest.py). Use path
+                    # COMPONENTS instead: a file in a tests/test/__tests__
+                    # directory, or named test_*/*_test.py/*_test.ts, is a
+                    # test; everything else is an implementation file.
+                    _parts = relative_path.split("/")
+                    _name = _parts[-1].lower()
+                    _test_dirs = {"tests", "test", "__tests__", "spec", "specs"}
+                    is_implementation = not (
+                        any(p.lower() in _test_dirs for p in _parts[:-1])
+                        or _name.startswith("test_")
+                        or _name.startswith("test.")
+                        or _name.endswith("_test.py")
+                        or _name.endswith("_test.ts")
+                        or _name.endswith(".test.js")
+                        or _name.endswith(".spec.js")
+                        or _name.endswith(".spec.ts")
                     )
 
                     # Check token count
@@ -1214,31 +1241,58 @@ class DatabaseManager:
             logger.info("Force refresh requested: discarding cached embeddings database to rebuild fresh.")
         elif self.repo_paths and os.path.exists(self.repo_paths["save_db_file"]):
             logger.info("Loading existing database...")
+            # Validate the cached index was built with the SAME embedder
+            # configuration currently in effect. Without this, switching
+            # embedder (OpenAI<->Ollama) or even just changing
+            # `dimensions`/`model` reuses a .pkl whose vectors don't match
+            # the query embedder's dimension, and FAISS fails at retrieval
+            # with "All embeddings should be of the same size" -- a hard
+            # error with no usable wiki. There's no mtime/hash on the .pkl
+            # otherwise (see `force` docstring), so this fingerprint is the
+            # only automatic invalidation signal.
+            fingerprint_path = self.repo_paths["save_db_file"] + ".fingerprint"
+            current_fingerprint = self._embedder_fingerprint(embedder_type)
+            cached_fingerprint = None
             try:
-                self.db = LocalDB.load_state(self.repo_paths["save_db_file"])
-                documents = self.db.get_transformed_data(key="split_and_embed")
-                if documents:
-                    lengths = [_embedding_vector_length(doc) for doc in documents]
-                    non_empty = sum(1 for n in lengths if n > 0)
-                    empty = len(lengths) - non_empty
-                    sample_sizes = sorted({n for n in lengths if n > 0})[:3]
-                    logger.info(
-                        "Loaded %s documents from existing database (embeddings: %s non-empty, %s empty; sample_dims=%s)",
-                        len(documents),
-                        non_empty,
-                        empty,
-                        sample_sizes,
-                    )
-
-                    if non_empty == 0:
-                        logger.warning(
-                            "Existing database contains no usable embeddings. Rebuilding embeddings..."
+                if os.path.exists(fingerprint_path):
+                    with open(fingerprint_path, "r", encoding="utf-8") as f:
+                        cached_fingerprint = f.read().strip()
+            except OSError:
+                pass
+            if current_fingerprint and cached_fingerprint and cached_fingerprint != current_fingerprint:
+                logger.warning(
+                    "Cached embeddings were built with a different embedder config "
+                    "(cached=%s, current=%s) -- rebuilding index from scratch to "
+                    "avoid a dimension/provider mismatch at retrieval time.",
+                    cached_fingerprint, current_fingerprint,
+                )
+                # Fall through to a fresh build instead of loading the stale .pkl.
+            else:
+                try:
+                    self.db = LocalDB.load_state(self.repo_paths["save_db_file"])
+                    documents = self.db.get_transformed_data(key="split_and_embed")
+                    if documents:
+                        lengths = [_embedding_vector_length(doc) for doc in documents]
+                        non_empty = sum(1 for n in lengths if n > 0)
+                        empty = len(lengths) - non_empty
+                        sample_sizes = sorted({n for n in lengths if n > 0})[:3]
+                        logger.info(
+                            "Loaded %s documents from existing database (embeddings: %s non-empty, %s empty; sample_dims=%s)",
+                            len(documents),
+                            non_empty,
+                            empty,
+                            sample_sizes,
                         )
-                    else:
-                        return documents
-            except Exception as e:
-                logger.error(f"Error loading existing database: {e}")
-                # Continue to create a new database
+
+                        if non_empty == 0:
+                            logger.warning(
+                                "Existing database contains no usable embeddings. Rebuilding embeddings..."
+                            )
+                        else:
+                            return documents
+                except Exception as e:
+                    logger.error(f"Error loading existing database: {e}")
+                    # Continue to create a new database
 
         # prepare the database
         logger.info("Creating new database...")
@@ -1254,10 +1308,45 @@ class DatabaseManager:
         self.db = transform_documents_and_save_to_db(
             documents, self.repo_paths["save_db_file"], embedder_type=embedder_type
         )
+        # Persist the embedder config fingerprint alongside the freshly built
+        # .pkl so a future prepare_db_index call can detect that the index no
+        # longer matches the active embedder (see the load-side check above).
+        fingerprint_path = self.repo_paths["save_db_file"] + ".fingerprint"
+        current_fingerprint = self._embedder_fingerprint(embedder_type)
+        if current_fingerprint:
+            try:
+                with open(fingerprint_path, "w", encoding="utf-8") as f:
+                    f.write(current_fingerprint)
+            except OSError as e:
+                logger.warning(f"Could not write embedder fingerprint: {e}")
         logger.info(f"Total documents: {len(documents)}")
         transformed_docs = self.db.get_transformed_data(key="split_and_embed")
         logger.info(f"Total transformed documents: {len(transformed_docs)}")
         return transformed_docs
+
+    @staticmethod
+    def _embedder_fingerprint(embedder_type: str = None) -> Optional[str]:
+        """A stable signature of the active embedder configuration (provider
+        type + model + dimensions + any task_type/batch settings) so the
+        cached .pkl can be auto-invalidated when the user switches embedder
+        or changes `dimensions` without clicking "Refresh Wiki". Returns
+        None if the config can't be read, in which case no fingerprint
+        check is applied (safe fallback -- behaves as before)."""
+        try:
+            from api.config import get_embedder_config
+            cfg = get_embedder_config() or {}
+            model_kwargs = cfg.get("model_kwargs", {}) or {}
+            parts = [
+                str(embedder_type or ""),
+                str(cfg.get("client_class", "")),
+                str(model_kwargs.get("model", "")),
+                str(model_kwargs.get("dimensions", "")),
+                str(model_kwargs.get("task_type", "")),
+                str(cfg.get("batch_size", "")),
+            ]
+            return "|".join(parts)
+        except Exception:
+            return None
 
     def prepare_retriever(self, repo_url_or_path: str, repo_type: str = None, access_token: str = None):
         """

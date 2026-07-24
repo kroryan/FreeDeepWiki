@@ -325,7 +325,7 @@ DEFAULT_EXCLUDED_FILES: List[str] = [
     ".gitattributes", ".gitmodules", ".github", ".gitlab-ci.yml",
     ".prettierrc", ".eslintrc", ".eslintignore", ".stylelintrc",
     ".editorconfig", ".jshintrc", ".pylintrc", ".flake8", "mypy.ini",
-    "pyproject.toml", "tsconfig.json", "webpack.config.js", "babel.config.js",
+    "webpack.config.js", "babel.config.js",
     "rollup.config.js", "jest.config.js", "karma.conf.js", "vite.config.js",
     "next.config.js", "*.min.js", "*.min.css", "*.bundle.js", "*.bundle.css",
     "*.map", "*.gz", "*.zip", "*.tar", "*.tgz", "*.rar", "*.7z", "*.iso",
@@ -414,7 +414,15 @@ def get_model_config(provider="google", model=None):
                 "model_client": AnthropicClient,
                 "default_model": "claude-sonnet-4-5",
                 "supportsCustomModel": True,
-                "models": {}
+                # max_tokens is honored by provider_streaming/agent_loop so
+                # Sonnet/Opus aren't hard-capped at 8192 (which truncated long
+                # wiki pages mid-sentence). Older models (haiku/sonnet-3) keep
+                # the 8192 default since they cap there.
+                "models": {
+                    "claude-sonnet-4-5": {"temperature": 0.7, "top_p": 0.8, "max_tokens": 64000},
+                    "claude-opus-4-1": {"temperature": 0.7, "top_p": 0.8, "max_tokens": 32000},
+                    "claude-sonnet-4-5-20250929": {"temperature": 0.7, "top_p": 0.8, "max_tokens": 64000},
+                }
             },
             "openrouter": {
                 "model_client": OpenRouterClient,
