@@ -30,6 +30,31 @@ logger = logging.getLogger(__name__)
 # Maximum token limit for OpenAI embedding models
 MAX_EMBEDDING_TOKENS = 8192
 
+# Example/template config files that must NEVER be excluded, even though
+# the exclude list's `.env.*` / `*.env` globs would catch them. These are
+# documentation (the literal "copy this to .env and fill in your keys"
+# template) -- they contain NO secrets -- and the wiki needs them to show
+# users which env vars a project expects. Verified the globs were silently
+# swallowing `.env.example`, so the generated wiki could never document the
+# project's configuration surface. Matched on basename via fnmatch.
+EXAMPLE_TEMPLATE_ALLOWLIST = (
+    ".env.example", ".env.sample", ".env.template", ".env.dist",
+    ".env.defaults", ".env.dev.example", ".env.prod.example",
+    "*.env.example", "*.env.sample", "*.env.template",
+)
+
+
+def _is_example_template(file_name: str) -> bool:
+    """True if the basename is an example/template config (allowlisted),
+    i.e. it should survive the `.env.*` / `*.env` exclude globs."""
+    if not file_name:
+        return False
+    name = os.path.basename(file_name)
+    for pat in EXAMPLE_TEMPLATE_ALLOWLIST:
+        if fnmatch.fnmatch(name, pat):
+            return True
+    return False
+
 def count_tokens(text: str, embedder_type: str = None, is_ollama_embedder: bool = None) -> int:
     """
     Count the number of tokens in a text string using tiktoken.
@@ -528,6 +553,14 @@ def read_all_documents(path: str, embedder_type: str = None, is_ollama_embedder:
                     if fnmatch.fnmatch(file_name, excluded_file):
                         is_excluded = True
                         break
+
+            # Example/template config files (.env.example, *.env.sample, ...)
+            # are documentation, not secrets -- they must survive the
+            # `.env.*` / `*.env` globs so the wiki can show users which env
+            # vars the project expects (matters most in user-focused mode,
+            # where configuration docs are exactly what the audience wants).
+            if is_excluded and _is_example_template(file_name):
+                is_excluded = False
 
             return not is_excluded
 

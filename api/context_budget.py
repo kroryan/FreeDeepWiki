@@ -57,6 +57,103 @@ _DEFAULT_CONTEXT_TOKENS: Dict[str, int] = {
 # Conservative floor for any provider not listed above.
 _FALLBACK_CLOUD_CONTEXT_TOKENS = 128_000
 
+# Per-MODEL context windows, keyed by provider then model name (substring
+# match against the resolved model string -- so "claude-3-5-sonnet" hits the
+# "claude-3-5" entry). Families differ a lot within a provider -- Claude
+# 3.5/3.7 Sonnet/Haiku are 200k but Claude 3 Opus is 200k too, while Claude 2
+# was 100k; GPT-4o is 128k but gpt-4 (vision) 128k, gpt-4-turbo 128k, gpt-3.5
+# 16k/4k; Gemini 1.5 is 1M/2M, Gemini 2.0 is 1M, Gemini 2.5 Pro is 1M/2M.
+# Without a per-model table the file-tree budget assumed the provider's
+# single floor for every model in that family, over-trimming trees a big
+# 2M-context model could fully absorb (or under-trimming for a tiny one).
+# Resolved in resolve_context_window AFTER num_ctx, BEFORE the provider floor.
+# Values are real published context windows, conservative (input-side).
+_MODEL_CONTEXT_TOKENS: Dict[str, Dict[str, int]] = {
+    "claude": {
+        "claude-3-5": 200_000,
+        "claude-3-7": 200_000,
+        "claude-3-opus": 200_000,
+        "claude-3-haiku": 200_000,
+        "claude-3-sonnet": 200_000,
+        "claude-2": 100_000,
+        "claude-opus-4": 200_000,
+        "claude-sonnet-4": 200_000,
+        "claude-haiku-4": 200_000,
+    },
+    "openai": {
+        "gpt-4o": 128_000,
+        "gpt-4-turbo": 128_000,
+        "gpt-4.1": 1_000_000,
+        "o1": 200_000,
+        "o3": 200_000,
+        "o4-mini": 200_000,
+        "gpt-4": 128_000,
+        "gpt-3.5-turbo-16k": 16_000,
+        "gpt-3.5": 16_000,
+    },
+    "openai_custom": {
+        # Caller-defined endpoint; assume modern 128k unless the model name
+        # signals otherwise. Kept permissive (substring) since custom models
+        # are arbitrary strings.
+        "gpt-4.1": 1_000_000,
+        "gpt-4o": 128_000,
+        "o1": 200_000,
+        "o3": 200_000,
+    },
+    "google": {
+        "gemini-2.5-pro": 2_000_000,
+        "gemini-2.5-flash": 1_000_000,
+        "gemini-2.0": 1_000_000,
+        "gemini-1.5-pro": 2_000_000,
+        "gemini-1.5-flash": 1_000_000,
+        "gemini-1.5": 1_000_000,
+    },
+    "openrouter": {
+        # OpenRouter proxies many models; default to the provider floor
+        # (128k) unless the routed model name carries a known family.
+        "gpt-4o": 128_000,
+        "claude-3.5": 200_000,
+        "claude-3.7": 200_000,
+        "gemini-2.5": 2_000_000,
+        "gemini-1.5": 1_000_000,
+        "deepseek": 128_000,
+        "llama-3": 128_000,
+    },
+    "litellm": {
+        "gpt-4o": 128_000,
+        "claude-3.5": 200_000,
+        "claude-3.7": 200_000,
+        "gemini-2.5": 2_000_000,
+        "gemini-1.5": 1_000_000,
+        "deepseek": 128_000,
+    },
+    "bedrock": {
+        "claude-3-5": 200_000,
+        "claude-3-7": 200_000,
+        "claude-3-opus": 200_000,
+        "claude-3-haiku": 200_000,
+        "anthropic.claude": 200_000,
+        "amazon.nova": 300_000,
+        "meta.llama3": 128_000,
+    },
+    "azure": {
+        "gpt-4o": 128_000,
+        "gpt-4-turbo": 128_000,
+        "gpt-4.1": 1_000_000,
+        "gpt-35-turbo": 16_000,
+        "gpt-3.5": 16_000,
+        "o3": 200_000,
+        "o4-mini": 200_000,
+    },
+    "dashscope": {
+        "qwen-max": 32_000,
+        "qwen-plus": 131_000,
+        "qwen-turbo": 1_000_000,
+        "qwen2.5": 131_000,
+        "qwen3": 131_000,
+    },
+}
+
 # Fraction of the model's context window reserved for the file tree
 # specifically -- leaves room for the README, task instructions, output XML
 # schema, conversation history, and the model's own generated output.
@@ -70,10 +167,17 @@ _PER_DIR_CAPS = (50, 30, 20, 12, 8, 5, 3, 2, 1)
 def resolve_context_window(provider: str, model_config_kwargs: dict) -> int:
     """The effective context window (tokens) to budget the file tree
     against: the model's own configured num_ctx if we have one (Ollama),
+    else a per-MODEL lookup (many models in a family have different windows),
     else a provider-appropriate default."""
     num_ctx = model_config_kwargs.get("num_ctx") if model_config_kwargs else None
     if isinstance(num_ctx, (int, float)) and num_ctx > 0:
         return int(num_ctx)
+    model = (model_config_kwargs.get("model") if model_config_kwargs else None) or ""
+    per_model = _MODEL_CONTEXT_TOKENS.get(provider, {})
+    if model and per_model:
+        for name, win in per_model.items():
+            if model == name or name in model:
+                return win
     return _DEFAULT_CONTEXT_TOKENS.get(provider, _FALLBACK_CLOUD_CONTEXT_TOKENS)
 
 

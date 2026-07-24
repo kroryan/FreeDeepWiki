@@ -463,6 +463,18 @@ class RAG(adal.Component):
                 leftover.append(idx)
 
         if len(selected) < self.final_top_k:
+            # When we must backfill to reach final_top_k, prefer implementation
+            # chunks over test fixtures -- a test file almost never belongs in a
+            # wiki explanation of how the code works, and backfill only runs
+            # when there weren't enough distinct files among the top candidates,
+            # so this preference is only the tie-breaker, never the main rank.
+            # (This is the consumer of the is_implementation meta_data flag
+            # set in data_pipeline.read_all_documents; previously dead.)
+            def _is_impl(idx: int) -> bool:
+                md = getattr(self.transformed_docs[idx], "meta_data", None) or {}
+                return bool(md.get("is_implementation", True))
+
+            leftover.sort(key=lambda idx: (0 if _is_impl(idx) else 1,))
             for idx in leftover:
                 if len(selected) >= self.final_top_k:
                     break

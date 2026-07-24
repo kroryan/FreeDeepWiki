@@ -245,6 +245,7 @@ class AuthorizationConfig(BaseModel):
     code: str = Field(..., description="Authorization code")
 
 from api.config import configs, WIKI_AUTH_MODE, WIKI_AUTH_CODE, DEFAULT_EXCLUDED_DIRS, DEFAULT_EXCLUDED_FILES
+from api.config import normalize_language, language_display_name, is_supported_language
 # Aliased: this module already defines its own route handler named
 # get_model_config() (GET /models/config, a completely different zero-arg
 # "list providers" endpoint) -- importing under the same name would shadow it.
@@ -1572,9 +1573,7 @@ async def get_cached_wiki(
     Retrieves cached wiki data (structure and generated pages) for a repository.
     """
     # Language validation
-    supported_langs = configs["lang_config"]["supported_languages"]
-    if not supported_langs.__contains__(language):
-        language = configs["lang_config"]["default"]
+    language = normalize_language(language)
 
     logger.info(f"Attempting to retrieve wiki cache for {owner}/{repo} ({repo_type}), lang: {language}, version: {version}")
     cached_data = await read_wiki_cache(
@@ -1605,9 +1604,7 @@ async def list_wiki_releases(
     Used by the frontend's "Wiki Release" dropdown to let the user read any
     previously generated version instead of an update silently overwriting it.
     """
-    supported_langs = configs["lang_config"]["supported_languages"]
-    if not supported_langs.__contains__(language):
-        language = configs["lang_config"]["default"]
+    language = normalize_language(language)
 
     files = _list_repo_cache_files(repo_type, owner, repo, language)
     releases = []
@@ -1644,10 +1641,7 @@ async def store_wiki_cache(request_data: WikiCacheRequest):
     select it in the Wiki Release dropdown.
     """
     # Language validation
-    supported_langs = configs["lang_config"]["supported_languages"]
-
-    if not supported_langs.__contains__(request_data.language):
-        request_data.language = configs["lang_config"]["default"]
+    request_data.language = normalize_language(request_data.language)
 
     logger.info(f"Attempting to save wiki cache for {request_data.repo.owner}/{request_data.repo.repo} ({request_data.repo.type}), lang: {request_data.language}")
     version = await save_wiki_cache(request_data)
@@ -1664,12 +1658,7 @@ async def edit_wiki_page(request_data: PageEditRequest):
     edit is just "load a release, replace one page's content, save as a new
     release" -- it never touches the cache file format directly.
     """
-    supported_langs = configs["lang_config"]["supported_languages"]
-    language = (
-        request_data.language
-        if supported_langs.__contains__(request_data.language)
-        else configs["lang_config"]["default"]
-    )
+    language = normalize_language(request_data.language)
 
     cached = await read_wiki_cache(
         request_data.repo.owner,
@@ -1711,9 +1700,7 @@ async def edit_wiki_page_ai_stream(request_data: PageEditAIRequest):
     saves it (if the user accepts it) via PATCH /api/wiki_cache/page like
     any manual edit.
     """
-    language_code = request_data.language or configs["lang_config"]["default"]
-    supported_langs = configs["lang_config"]["supported_languages"]
-    language_name = supported_langs.get(language_code, "English")
+    language_name = language_display_name(request_data.language)
 
     prompt = PAGE_EDIT_AI_SYSTEM_PROMPT.format(
         page_title=request_data.page_title,
@@ -2602,9 +2589,8 @@ async def delete_wiki_cache(
     explicit delete targets either a single release (``version`` given) or every
     release of the repo/language/type (``version`` omitted).
     """
-    # Language validation
-    supported_langs = configs["lang_config"]["supported_languages"]
-    if not supported_langs.__contains__(language):
+    # Language validation (strict: reject unsupported instead of coercing)
+    if not is_supported_language(language):
         raise HTTPException(status_code=400, detail="Language is not supported")
 
     if WIKI_AUTH_MODE:

@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 
 from api.agent_loop import MAX_TOOL_ROUNDS, run_agent_chat, run_native_tool_chat, stream_chat
 from api.chat_models import ChatCompletionRequest, ChatMessage  # noqa: F401 (ChatMessage re-exported for callers)
-from api.config import get_model_config, configs, OPENROUTER_API_KEY, OPENAI_API_KEY, LITELLM_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+from api.config import get_model_config, configs, OPENROUTER_API_KEY, OPENAI_API_KEY, LITELLM_API_KEY, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, normalize_language, language_display_name
 from api.context_budget import summarize_file_tree_in_query
 from api.data_pipeline import count_tokens, get_file_content
 from api.rag import RAG
@@ -364,9 +364,8 @@ async def chat_completions_stream(request: ChatCompletionRequest):
         )
 
         # Get language information
-        language_code = request.language or configs["lang_config"]["default"]
-        supported_langs = configs["lang_config"]["supported_languages"]
-        language_name = supported_langs.get(language_code, "English")
+        language_code = normalize_language(request.language)
+        language_name = language_display_name(language_code)
 
         # Create system prompt
         if is_deep_research:

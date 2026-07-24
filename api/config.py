@@ -3,7 +3,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import List, Union, Dict, Any
+from typing import List, Union, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +295,47 @@ def load_lang_config():
 
     return loaded_config
 
-# Default excluded directories and files
+
+# --- Language config single-source-of-truth helpers -----------------------
+# Eight call sites across api/api.py, websocket_wiki.py and simple_chat.py
+# used to each open-code `configs["lang_config"]["supported_languages"]` +
+# `__contains__` + `.get(code, "English")`, with subtly different fallback
+# semantics (some fall back to the default, one raises 400, one silently uses
+# "English" as the display name). These helpers centralize that so the lang
+# table lives in exactly one place (lang.json) and the behaviour can't drift.
+
+def get_supported_languages() -> dict:
+    """The supported_languages map (code -> display name) from lang.json."""
+    return configs["lang_config"]["supported_languages"]
+
+
+def get_default_language() -> str:
+    """The configured default language code (e.g. 'en')."""
+    return configs["lang_config"]["default"]
+
+
+def normalize_language(code: Optional[str]) -> str:
+    """Return `code` if it's a supported language, else the configured
+    default. Use this wherever a request gives a language code that must be
+    one we actually support before looking up wiki cache / rendering prompts."""
+    if code and get_supported_languages().__contains__(code):
+        return code
+    return get_default_language()
+
+
+def language_display_name(code: Optional[str]) -> str:
+    """Human-readable name for `code` (normalized first), with 'English' as
+    the last-resort fallback if the normalized code somehow isn't in the
+    table (keeps the historical behaviour of the prompt builders)."""
+    resolved = normalize_language(code)
+    return get_supported_languages().get(resolved, "English")
+
+
+def is_supported_language(code: Optional[str]) -> bool:
+    """Strict check: True only if `code` is a non-empty supported language.
+    Use where an unsupported language should be rejected (400) rather than
+    silently coerced to the default."""
+    return bool(code) and get_supported_languages().__contains__(code)
 DEFAULT_EXCLUDED_DIRS: List[str] = [
     # Virtual environments and package managers
     "./.venv/", "./venv/", "./env/", "./virtualenv/",

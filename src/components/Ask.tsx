@@ -69,6 +69,36 @@ interface AskProps {
   onRef?: (ref: { clearConversation: () => void }) => void;
 }
 
+// Maximum deep-research iterations before we force a final synthesis round.
+// Single source of truth -- previously hardcoded as `>= 5` in four places,
+// which made the cap impossible to find or tune. Override via the
+// HACKDEEPWIKI_MAX_RESEARCH_ITERATIONS build-time const if needed.
+const MAX_RESEARCH_ITERATIONS = 5;
+// Sentinel the continuation round injects as a synthetic user message. Hidden
+// from the transcript UI (see the filters below). The text deliberately
+// re-anchors on the *original* question -- early iterations used a bare
+// "Continue the research" that let later rounds drift off-topic.
+const RESEARCH_CONTINUE_SENTINEL = '[DEEP RESEARCH] Continue the research';
+
+/** Build the synthetic continuation user message for a deep-research round.
+ * Re-anchors the model on the original question so iteration N>1 stays on
+ * topic instead of free-associating from the previous assistant answer. */
+function buildResearchContinueMessage(originalTopic: string): string {
+  const topic = (originalTopic || '').trim().replace(/^\[DEEP RESEARCH\]\s*/i, '');
+  return topic
+    ? `[DEEP RESEARCH] Continue the research on: ${topic}`
+    : RESEARCH_CONTINUE_SENTINEL;
+}
+
+/** True if a conversation message is one of our synthetic deep-research
+ * continuation prompts (so the UI/export filters it out of the transcript). */
+function isResearchContinueMessage(content: string): boolean {
+  if (!content) return false;
+  if (content === RESEARCH_CONTINUE_SENTINEL) return true;
+  // buildResearchContinueMessage emits "[DEEP RESEARCH] Continue the research on: ..."
+  return /^\[DEEP RESEARCH\]\s*Continue the research(\s+on:)?/i.test(content);
+}
+
 const Ask: React.FC<AskProps> = ({
   repoInfo,
   provider = '',
@@ -359,7 +389,7 @@ const Ask: React.FC<AskProps> = ({
     ...conversationHistory,
     ...(response ? [{role: 'assistant' as const, content: response}] : []),
   ]
-    .filter(message => message.content !== '[DEEP RESEARCH] Continue the research')
+    .filter(message => !isResearchContinueMessage(message.content))
     .map(message => `## ${message.role === 'user'
       ? (messages.ask?.you || 'You')
       : (messages.ask?.assistant || 'Assistant')}\n\n${message.content}`)
@@ -494,6 +524,11 @@ const Ask: React.FC<AskProps> = ({
       const currentResponse = response;
 
       // Create a new message from the AI's previous response
+      // Re-anchor on the original question: the first user turn in history.
+      // Without this, iteration 2+ sends a bare "Continue the research" that
+      // lets the model drift away from what the user actually asked.
+      const originalTopic =
+        conversationHistory.find(m => m.role === 'user')?.content ?? '';
       const newHistory: Message[] = [
         ...conversationHistory,
         {
@@ -502,7 +537,7 @@ const Ask: React.FC<AskProps> = ({
         },
         {
           role: 'user',
-          content: '[DEEP RESEARCH] Continue the research'
+          content: buildResearchContinueMessage(originalTopic)
         }
       ];
 
@@ -592,8 +627,8 @@ const Ask: React.FC<AskProps> = ({
           // Check if research is complete when the WebSocket closes
           const isComplete = checkIfResearchComplete(fullResponse);
 
-          // Force completion after a maximum number of iterations (5)
-          const forceComplete = newIteration >= 5;
+          // Force completion after the maximum number of research iterations.
+          const forceComplete = newIteration >= MAX_RESEARCH_ITERATIONS;
 
           if (forceComplete && !isComplete) {
             // If we're forcing completion, append a comprehensive conclusion to the response
@@ -680,8 +715,8 @@ const Ask: React.FC<AskProps> = ({
       // Check if research is complete
       const isComplete = checkIfResearchComplete(fullResponse);
 
-      // Force completion after a maximum number of iterations (5)
-      const forceComplete = researchIteration >= 5;
+      // Force completion after the maximum number of research iterations.
+      const forceComplete = researchIteration >= MAX_RESEARCH_ITERATIONS;
 
       if (forceComplete && !isComplete) {
         // If we're forcing completion, append a comprehensive conclusion to the response
@@ -715,7 +750,7 @@ const Ask: React.FC<AskProps> = ({
       const isComplete = checkIfResearchComplete(response);
       if (isComplete) {
         setResearchComplete(true);
-      } else if (researchIteration > 0 && researchIteration < 5) {
+      } else if (researchIteration > 0 && researchIteration < MAX_RESEARCH_ITERATIONS) {
         // Only auto-continue if we're already in a research process and haven't reached max iterations
         // Use setTimeout to avoid potential infinite loops
         const timer = setTimeout(() => {
@@ -1106,7 +1141,7 @@ const Ask: React.FC<AskProps> = ({
               className="p-4 max-h-[45vh] overflow-y-auto space-y-4"
             >
               {conversationHistory.map((message, index) => {
-                if (message.content === '[DEEP RESEARCH] Continue the research') {
+                if (isResearchContinueMessage(message.content)) {
                   return null;
                 }
                 const isUser = message.role === 'user';
@@ -1293,7 +1328,7 @@ const Ask: React.FC<AskProps> = ({
                       </div>
                     </>
                   )}
-                  {researchIteration >= 5 && (
+                  {researchIteration >= MAX_RESEARCH_ITERATIONS && (
                     <>
                       <div className="flex items-center">
                         <div className="w-2 h-2 bg-[var(--accent-primary)] rounded-full mr-2"></div>

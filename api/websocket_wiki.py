@@ -13,6 +13,8 @@ from api.config import (
     LITELLM_API_KEY,
     AWS_ACCESS_KEY_ID,
     AWS_SECRET_ACCESS_KEY,
+    normalize_language,
+    language_display_name,
 )
 from api.agent_loop import MAX_TOOL_ROUNDS, run_agent_chat, run_native_tool_chat, stream_chat
 from api.chat_models import ChatCompletionRequest, ChatMessage  # noqa: F401 (ChatMessage re-exported for callers)
@@ -394,9 +396,8 @@ async def handle_websocket_chat(websocket: WebSocket):
         )
 
         # Get language information
-        language_code = request.language or configs["lang_config"]["default"]
-        supported_langs = configs["lang_config"]["supported_languages"]
-        language_name = supported_langs.get(language_code, "English")
+        language_code = normalize_language(request.language)
+        language_name = language_display_name(language_code)
 
         # Create system prompt -- shared templates from api/prompts.py, same
         # ones simple_chat.py uses, so the two transports can't drift on

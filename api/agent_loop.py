@@ -363,15 +363,31 @@ async def _run_native_tool_rounds(
 
     sent_anything = False
 
+    # Final synthesis round: the model must produce the WHOLE answer here, but
+    # a per-round max_tokens tuned for terse tool-call rounds could truncate
+    # it. A13: give the last round at least FINAL_ROUND_MIN_MAX_TOKENS of
+    # output room (8192 is supported by every model the app targets; if the
+    # provider capped max_tokens below that, the final answer would be cut
+    # short), and inject the same "answer now, no more tools" note the textual
+    # path (_run_agent_rounds) uses -- the native path was dropping tools
+    # silently without telling the model to stop searching.
+    FINAL_ROUND_MIN_MAX_TOKENS = 8192
+
     for round_num in range(1, MAX_TOOL_ROUNDS + 1):
         is_last_round = round_num == MAX_TOOL_ROUNDS
         round_tools = [] if is_last_round else tool_schemas
+
+        round_kwargs = dict(model_kwargs_base)
+        if is_last_round:
+            cur = round_kwargs.get("max_tokens")
+            if cur is None or cur < FINAL_ROUND_MIN_MAX_TOKENS:
+                round_kwargs["max_tokens"] = FINAL_ROUND_MIN_MAX_TOKENS
 
         tool_calls: list = []
         round_text_parts: list = []
         try:
             async for event in client.astream_with_tools(
-                messages=messages, tools=round_tools, model_kwargs=dict(model_kwargs_base)
+                messages=messages, tools=round_tools, model_kwargs=round_kwargs
             ):
                 if event["type"] == "text":
                     text = event["text"]
